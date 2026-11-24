@@ -1,0 +1,28 @@
+{
+  "name": "local-transcriber",
+  "version": "1.0.0",
+  "description": "Aplicação local para transcrição com Whisper.cpp e resumo multi-provedor (OpenAI, Anthropic, Gemini e Ollama).",
+  "directories": {
+    "doc": "docs"
+  },
+  "scripts": {
+    "tauri": "tauri",
+    "test:ui": "node --test ui/tests/"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/lucas1dev/localtranscriber.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "bugs": {
+    "url": "https://github.com/lucas1dev/localtranscriber/issues"
+  },
+  "homepage": "https://github.com/lucas1dev/localtranscriber#readme",
+  "devDependencies": {
+    "@tauri-apps/cli": "2.12.5"
+  },
+  "private": true
+}

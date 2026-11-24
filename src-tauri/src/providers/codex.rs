@@ -117,10 +117,7 @@ impl Codex {
     pub async fn login(&self) -> Result<AuthStatus, AppError> {
         let out = self.run(&["login"], LOGIN_TIMEOUT).await?;
         if out.code != 0 {
-            return Err(AppError::Internal(format!(
-                "Codex falhou: {}",
-                cli::tail(&out.stderr, 600)
-            )));
+            return Err(command_failure(&out));
         }
         Ok(self.status().await)
     }
@@ -128,10 +125,7 @@ impl Codex {
     pub async fn logout(&self) -> Result<(), AppError> {
         let out = self.run(&["logout"], STATUS_TIMEOUT).await?;
         if out.code != 0 {
-            return Err(AppError::Internal(format!(
-                "Codex falhou: {}",
-                cli::tail(&out.stderr, 600)
-            )));
+            return Err(command_failure(&out));
         }
         Ok(())
     }
@@ -143,6 +137,19 @@ impl Codex {
             model,
         }
     }
+}
+
+/// Falha de `codex login`/`codex logout`: o fim do stderr, ou do stdout se o stderr vier vazio.
+fn command_failure(out: &cli::CliOutput) -> AppError {
+    let detail = if out.stderr.trim().is_empty() {
+        &out.stdout
+    } else {
+        &out.stderr
+    };
+    if detail.trim().is_empty() {
+        return AppError::Internal(format!("Codex falhou (código {}).", out.code));
+    }
+    AppError::Internal(format!("Codex falhou: {}", cli::tail(detail, 600)))
 }
 
 pub struct CodexLlm {
@@ -290,6 +297,30 @@ done
         llm.complete("S", "U").await.unwrap();
         let args = std::fs::read_to_string(tmp.path().join("args.txt")).unwrap();
         assert!(args.contains("-m\ngpt-5.1\n"));
+    }
+
+    #[tokio::test]
+    async fn login_and_logout_failures_fall_back_to_stdout() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path().join("home");
+        let bin = script(tmp.path(), "codex", "echo 'Error: porta 1455 em uso'; exit 1");
+        let codex = Codex { bin, home: home.clone() };
+        for r in [codex.login().await.map(|_| ()), codex.logout().await] {
+            match r {
+                Err(AppError::Internal(m)) => assert_eq!(m, "Codex falhou: Error: porta 1455 em uso"),
+                other => panic!("{other:?}"),
+            }
+        }
+        let bin = script(tmp.path(), "codex2", "echo 'saida' ; echo 'no stderr' >&2; exit 1");
+        match (Codex { bin, home: home.clone() }).logout().await {
+            Err(AppError::Internal(m)) => assert_eq!(m, "Codex falhou: no stderr"),
+            other => panic!("{other:?}"),
+        }
+        let bin = script(tmp.path(), "codex3", "exit 3");
+        match (Codex { bin, home }).logout().await {
+            Err(AppError::Internal(m)) => assert_eq!(m, "Codex falhou (código 3)."),
+            other => panic!("{other:?}"),
+        }
     }
 
     #[tokio::test]

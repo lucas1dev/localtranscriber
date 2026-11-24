@@ -1,4 +1,16 @@
+pub mod claude_code;
+pub mod cli;
+pub mod codex;
+pub mod http;
+pub mod ollama;
+
+use std::sync::Arc;
+
 use serde::{Deserialize, Serialize};
+
+use crate::credentials::SecretStore;
+use crate::error::AppError;
+use crate::summarize::Llm;
 
 #[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Hash, Debug)]
 #[serde(rename_all = "snake_case")]
@@ -42,13 +54,188 @@ pub fn keychain_account(id: ProviderId) -> Option<&'static str> {
     }
 }
 
+#[derive(Debug, Clone)]
+pub struct Endpoints {
+    pub openai: String,
+    pub anthropic: String,
+    pub gemini: String,
+    pub ollama: String,
+}
+
+impl Default for Endpoints {
+    fn default() -> Self {
+        Self {
+            openai: "https://api.openai.com".into(),
+            anthropic: "https://api.anthropic.com".into(),
+            gemini: "https://generativelanguage.googleapis.com".into(),
+            ollama: "http://127.0.0.1:11434".into(),
+        }
+    }
+}
+
+pub struct ProviderCtx {
+    pub http: reqwest::Client,
+    pub endpoints: Endpoints,
+    pub secrets: Arc<dyn SecretStore>,
+    pub codex: codex::Codex,
+    pub claude: Option<claude_code::ClaudeCode>,
+}
+
+fn api_key(id: ProviderId, ctx: &ProviderCtx) -> Result<String, AppError> {
+    let stored = match keychain_account(id) {
+        Some(account) => ctx.secrets.get(account)?,
+        None => None,
+    };
+    stored.ok_or_else(|| {
+        AppError::User(format!(
+            "Adicione uma chave de API {} em Configurações → Contas de IA.",
+            label(id)
+        ))
+    })
+}
+
+/// Monta o provedor `id`; usa `default_model(id)` quando `model` é `None`.
+pub fn build(
+    id: ProviderId,
+    model: Option<String>,
+    ctx: &ProviderCtx,
+) -> Result<Box<dyn Llm>, AppError> {
+    let model = model.or_else(|| default_model(id).map(String::from));
+    let http = ctx.http.clone();
+    let e = &ctx.endpoints;
+    Ok(match id {
+        ProviderId::Openai => Box::new(http::OpenAi {
+            http,
+            base: e.openai.clone(),
+            key: api_key(id, ctx)?,
+            model: model.unwrap_or_default(),
+        }),
+        ProviderId::Anthropic => Box::new(http::Anthropic {
+            http,
+            base: e.anthropic.clone(),
+            key: api_key(id, ctx)?,
+            model: model.unwrap_or_default(),
+        }),
+        ProviderId::Gemini => Box::new(http::Gemini {
+            http,
+            base: e.gemini.clone(),
+            key: api_key(id, ctx)?,
+            model: model.unwrap_or_default(),
+        }),
+        ProviderId::Ollama => Box::new(ollama::Ollama {
+            http,
+            base: e.ollama.clone(),
+            model: model.unwrap_or_default(),
+        }),
+        ProviderId::Codex => Box::new(ctx.codex.llm(model)),
+        ProviderId::ClaudeCode => match &ctx.claude {
+            Some(claude) => Box::new(claude.llm(model)),
+            None => {
+                return Err(AppError::User(
+                    "Claude Code não encontrado neste computador.".into(),
+                ))
+            }
+        },
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::credentials::MemoryStore;
+
+    fn ctx(secrets: MemoryStore, claude: Option<claude_code::ClaudeCode>) -> ProviderCtx {
+        ProviderCtx {
+            http: reqwest::Client::new(),
+            endpoints: Endpoints::default(),
+            secrets: Arc::new(secrets),
+            codex: codex::Codex {
+                bin: "codex".into(),
+                home: "codex-home".into(),
+            },
+            claude,
+        }
+    }
+
+    fn user_err(r: Result<Box<dyn Llm>, AppError>) -> String {
+        match r {
+            Err(AppError::User(m)) => m,
+            Err(e) => panic!("esperava User, veio {e:?}"),
+            Ok(_) => panic!("esperava erro"),
+        }
+    }
+
+    #[tokio::test]
+    async fn build_without_key_is_user_error() {
+        let c = ctx(MemoryStore::new(), None);
+        let m = user_err(build(ProviderId::Openai, None, &c));
+        assert!(m.contains("Configurações → Contas de IA"), "{m}");
+        assert_eq!(
+            m,
+            "Adicione uma chave de API OpenAI (API) em Configurações → Contas de IA."
+        );
+        assert!(user_err(build(ProviderId::Gemini, None, &c)).contains("Gemini (API)"));
+    }
+
+    #[tokio::test]
+    async fn build_with_key_uses_default_model_and_endpoint() {
+        use wiremock::matchers::{body_partial_json, header, method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/messages"))
+            .and(header("x-api-key", "sk-ant-123"))
+            .and(body_partial_json(
+                serde_json::json!({"model":"claude-sonnet-4-5"}),
+            ))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(serde_json::json!({"content":[{"type":"text","text":"ok"}]})),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+        let store = MemoryStore::new();
+        store.set("anthropic", "sk-ant-123").unwrap();
+        let mut c = ctx(store, None);
+        c.endpoints.anthropic = server.uri();
+        let llm = build(ProviderId::Anthropic, None, &c).unwrap();
+        assert_eq!(llm.complete("S", "U").await.unwrap(), "ok");
+    }
+
+    #[tokio::test]
+    async fn build_claude_code_requires_installation() {
+        let c = ctx(MemoryStore::new(), None);
+        assert_eq!(
+            user_err(build(ProviderId::ClaudeCode, None, &c)),
+            "Claude Code não encontrado neste computador."
+        );
+        let c = ctx(
+            MemoryStore::new(),
+            Some(claude_code::ClaudeCode {
+                bin: "claude".into(),
+            }),
+        );
+        assert!(build(ProviderId::ClaudeCode, None, &c).is_ok());
+        assert!(build(ProviderId::Codex, None, &c).is_ok());
+        assert!(build(ProviderId::Ollama, None, &c).is_ok());
+    }
+
+    #[test]
+    fn endpoints_default() {
+        let e = Endpoints::default();
+        assert_eq!(e.openai, "https://api.openai.com");
+        assert_eq!(e.anthropic, "https://api.anthropic.com");
+        assert_eq!(e.gemini, "https://generativelanguage.googleapis.com");
+        assert_eq!(e.ollama, "http://127.0.0.1:11434");
+    }
 
     #[test]
     fn provider_id_serializes_snake_case() {
-        assert_eq!(serde_json::to_string(&ProviderId::ClaudeCode).unwrap(), "\"claude_code\"");
+        assert_eq!(
+            serde_json::to_string(&ProviderId::ClaudeCode).unwrap(),
+            "\"claude_code\""
+        );
     }
 
     #[test]

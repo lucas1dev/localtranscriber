@@ -4,7 +4,7 @@ Aplicativo de desktop (macOS Apple Silicon e Windows x64) que transcreve áudio 
 
 ## Baixar e instalar
 
-Baixe o instalador da versão mais recente em [Releases](https://github.com/lucas1dev/localtranscriber/releases): `.dmg` para Mac ou instalador `.msi`/`.exe` para Windows.
+Baixe o instalador da versão mais recente em [Releases](https://github.com/lucas1dev/localtranscriber/releases): `.dmg` para Mac ou instalador `.msi`/`.exe` para Windows. No Mac, é preciso macOS 14.6 ou mais novo.
 
 O app ainda não é assinado digitalmente, então o sistema avisa na primeira abertura.
 

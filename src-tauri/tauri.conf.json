@@ -34,7 +34,7 @@
     "resources": ["licenses/*"],
     "externalBin": ["binaries/ffmpeg", "binaries/codex"],
     "macOS": {
-      "minimumSystemVersion": "11.0",
+      "minimumSystemVersion": "14.6",
       "infoPlist": "Info.plist",
       "signingIdentity": "-",
       "hardenedRuntime": false

@@ -15,6 +15,7 @@ pub struct Segment {
     pub start: String,
     pub end: String,
     pub text: String,
+    pub speaker: Option<String>,
 }
 
 #[derive(Serialize, Clone, Debug)]
@@ -294,6 +295,7 @@ impl Engine {
                     start: format_ts(seg.start_timestamp()),
                     end: format_ts(seg.end_timestamp()),
                     text,
+                    speaker: None,
                 })
             })
             .collect();
@@ -317,7 +319,14 @@ mod tests {
             start: "00:00:00,000".into(),
             end: "00:00:01,000".into(),
             text: text.into(),
+            speaker: None,
         }
+    }
+
+    #[test]
+    fn segment_serializes_speaker_null() {
+        let v = serde_json::to_value(seg("oi")).unwrap();
+        assert!(v.get("speaker").unwrap().is_null());
     }
 
     #[test]

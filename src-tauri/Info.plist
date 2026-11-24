@@ -4,5 +4,7 @@
 <dict>
   <key>NSMicrophoneUsageDescription</key>
   <string>O Local Transcriber usa o microfone para transcrever gravações no seu computador.</string>
+  <key>NSAudioCaptureUsageDescription</key>
+  <string>O Local Transcriber grava o som do computador para transcrever reuniões no seu computador.</string>
 </dict>
 </plist>

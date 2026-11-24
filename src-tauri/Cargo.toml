@@ -23,6 +23,8 @@ tokio = { version = "1", features = ["full"] }
 tokio-util = "0.7"
 reqwest = { version = "=0.12.28", default-features = false, features = ["rustls-tls", "json", "stream"] }
 whisper-rs = "=0.16.0"
+cpal = "=0.18.2"
+rubato = "=5.1.0"
 tempfile = "3"
 futures-util = "0.3"
 

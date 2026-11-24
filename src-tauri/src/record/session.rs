@@ -159,6 +159,7 @@ impl Session {
             .name("gravacao-transcricao".into())
             .spawn(move || transcribe_jobs(job_rx, &speakers, &*transcriber, &worker_shared))?;
 
+        let panic_shared = Arc::clone(&shared);
         let collector = Collector {
             sources: sources.into_iter().map(|s| Live::new(s, start)).collect(),
             env,
@@ -168,7 +169,13 @@ impl Session {
         };
         let collector = std::thread::Builder::new()
             .name("gravacao-coleta".into())
-            .spawn(move || collector.run())?;
+            .spawn(move || {
+                // O pânico solta as capturas e a fila; a transcrição termina o que
+                // já estava nela e `stop` devolve esse resultado parcial.
+                if catch_unwind(AssertUnwindSafe(|| collector.run())).is_err() {
+                    panic_shared.fail("A captura da gravação falhou.".into());
+                }
+            })?;
 
         Ok(Session {
             stop_tx: Some(stop_tx),
@@ -178,19 +185,19 @@ impl Session {
     }
 
     /// Para as fontes, transcreve o que estiver na fila e monta o resultado.
-    /// Se a sessão já tinha parado sozinha por erro, devolve o que foi transcrito.
+    /// Se a sessão já tinha parado sozinha por erro (inclusive pânico na coleta,
+    /// que já virou um `Error`), devolve o que foi transcrito.
     /// Bloqueia até a fila esvaziar.
     pub fn stop(mut self) -> Result<Recorded, AppError> {
         drop(self.stop_tx.take());
-        let collected = self.collector.take().is_none_or(|h| h.join().is_ok());
+        if let Some(collector) = self.collector.take() {
+            let _ = collector.join();
+        }
         let by_source = self
             .transcriber
             .take()
             .and_then(|h| h.join().ok())
             .ok_or_else(|| AppError::Internal("A transcrição da gravação falhou.".into()))?;
-        if !collected {
-            return Err(AppError::Internal("A captura da gravação falhou.".into()));
-        }
         let dual = by_source.len() > 1;
         let segments = by_source.into_iter().reduce(interleave).unwrap_or_default();
         let text = if dual { labeled_text(&segments) } else { join_text(&segments) };
@@ -1169,15 +1176,23 @@ mod tests {
     }
 
     #[test]
-    fn collector_panic_is_an_internal_error() {
+    fn collector_panic_ends_with_one_error_and_partial_result() {
         let clock = FakeClock::new();
-        let (_tx, opened, dropped) = fake_source(None);
-        // O nível é emitido pela thread de coleta: um sink que entra em pânico ali a derruba.
-        let sink: Sink = Arc::new(|e| {
-            if matches!(e, SessionEvent::Level { .. }) {
-                panic!("sink quebrou");
-            }
-        });
+        let (tx, opened, dropped) = fake_source(None);
+        // O nível é emitido pela thread de coleta: um sink que entra em pânico ali a
+        // derruba. Ele só é armado depois do primeiro bloco transcrito.
+        let armed = Arc::new(AtomicBool::new(false));
+        let (events_tx, events) = mpsc::channel();
+        let sink: Sink = {
+            let armed = armed.clone();
+            let events_tx = Mutex::new(events_tx);
+            Arc::new(move |e| {
+                if armed.load(Ordering::SeqCst) && matches!(e, SessionEvent::Level { .. }) {
+                    panic!("sink quebrou");
+                }
+                let _ = events_tx.lock().unwrap().send(e);
+            })
+        };
         let session = Session::new(
             vec![spec(SourceKind::Mic, None, opened, no_reopen())],
             fake_transcriber(),
@@ -1186,11 +1201,15 @@ mod tests {
             clock.now(),
         )
         .unwrap();
-        match session.stop() {
-            Err(AppError::Internal(m)) => assert_eq!(m, "A captura da gravação falhou."),
-            other => panic!("esperava Internal, veio {other:?}"),
-        }
+        feed(&tx, &clock, 12);
+        wait_for(&events, |e| matches!(e, SessionEvent::Text { .. }));
+        armed.store(true, Ordering::SeqCst);
+        let e = wait_for(&events, |e| matches!(e, SessionEvent::Error { .. }));
+        assert_eq!(e, SessionEvent::Error { message: "A captura da gravação falhou.".into() });
+        let out = session.stop().expect("resultado parcial");
+        assert_eq!(out.text, "b0");
         assert!(dropped.load(Ordering::SeqCst));
+        assert!(errors(&events.try_iter().collect::<Vec<_>>()).is_empty());
     }
 
     #[test]

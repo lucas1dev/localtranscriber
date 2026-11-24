@@ -1,114 +1,71 @@
-# Local Transcriber 2.0
+# Local Transcriber
 
-Aplicação local para transcrição com Whisper.cpp e resumo multi-provedor (OpenAI, Anthropic, Gemini e Ollama).
+Aplicativo de desktop (macOS Apple Silicon e Windows x64) que transcreve áudio no seu próprio computador, usando Whisper (whisper.cpp), e gera resumos com a IA que você escolher. Você pode importar arquivos de áudio ou gravar pelo microfone, e exportar o resultado.
 
-## Arquitetura
+## Baixar e instalar
 
-- **Frontend:** HTML/CSS/JavaScript servido pelo FastAPI.
-- **Backend:** FastAPI em `127.0.0.1:8765`.
-- **Transcrição:** `whisper-cli` (whisper.cpp), com Metal quando a build do Homebrew estiver habilitada para Apple Silicon.
-- **Modelo principal:** Whisper Large V3 Turbo (`ggml-large-v3-turbo.bin`).
-- **Conversão:** FFmpeg para WAV mono 16 kHz.
-- **Resumos:** adaptadores HTTP separados para OpenAI Responses API, Anthropic Messages API, Gemini generateContent e Ollama `/api/chat`.
-- **Credenciais:** macOS Keychain via Python Keyring; chaves nunca são devolvidas à interface.
-- **Histórico:** nesta entrega os resultados ficam na sessão do navegador; persistência SQLite e biblioteca de projetos ficam para a próxima etapa.
-- **Privacidade:** áudio/transcrição só saem do Mac quando o usuário explicitamente aciona um provedor de nuvem para resumir. Ollama permanece local.
+Baixe o instalador da versão mais recente em [Releases](https://github.com/lucas1dev/localtranscriber/releases): `.dmg` para Mac ou instalador `.msi`/`.exe` para Windows.
 
-## Requisitos
+O app ainda não é assinado digitalmente, então o sistema avisa na primeira abertura.
 
-- macOS Apple Silicon (testado em projeto para M4; valide a build Metal no seu computador).
-- Homebrew.
-- Python 3.12.
-- Espaço em disco para modelo (Large V3 Turbo ocupa vários GB, dependendo da distribuição).
-- Ollama opcional para resumo local.
+**macOS (Gatekeeper):** arraste o app para Aplicativos, clique com o botão direito nele e escolha **Abrir**, depois confirme em **Abrir**. Se o macOS bloquear mesmo assim, abra **Ajustes do Sistema → Privacidade e Segurança**, role até a mensagem sobre o app e clique em **Abrir mesmo assim**.
 
-## Instalação
+**Windows (SmartScreen):** na tela "O Windows protegeu seu computador", clique em **Mais informações** e depois em **Executar assim mesmo**.
 
-```bash
-chmod +x install.sh start.sh
-./install.sh large-v3-turbo
-```
+## Primeiro uso
 
-O instalador instala `whisper.cpp`, FFmpeg, Python 3.12, dependências Python e baixa o modelo GGML Large V3 Turbo.
+1. Abra **Configurações → Transcrição** e baixe um modelo Whisper (os maiores são mais precisos e mais lentos).
+2. Volte para a tela inicial, importe um áudio ou grave pelo microfone e transcreva.
 
-Modelos alternativos:
+A transcrição roda 100% no seu computador, sem internet depois que o modelo é baixado.
 
-```bash
-./install.sh small
-./install.sh medium
-./install.sh base
-```
+## Contas de IA para resumos
 
-## Executar
+Resumir é opcional. Configure em **Configurações**:
 
-```bash
-./start.sh
-```
+- **ChatGPT:** entre com a sua conta pelo login embutido (usa o Codex CLI que acompanha o app).
+- **Chaves de API (OpenAI, Anthropic, Gemini):** cole a sua chave. **Atenção: o uso da API é cobrado pelo provedor, na sua conta.**
+- **Claude Code (opcional):** se você já tem o Claude Code instalado e logado, o app pode usá-lo. **Ele usa o plano da própria pessoa** (os limites e a cobrança são os da sua assinatura).
+- **Ollama:** resumos locais, sem enviar nada para a nuvem. Instale o [Ollama](https://ollama.com/download) e baixe um modelo pelo app.
 
-Abra `http://127.0.0.1:8765` no Safari ou Chrome. Pare com `Ctrl+C` no Terminal.
+## Privacidade
 
-## Desenvolvimento (app desktop, `src-tauri/`)
+O áudio e a transcrição ficam no seu computador. **Só sai da máquina o texto que você mandar resumir em um provedor de nuvem** (ChatGPT, OpenAI, Anthropic, Gemini ou Claude Code). Com o Ollama, nada sai do computador.
 
-Antes de `cargo build`, `cargo test` ou `npm run tauri build`, prepare os sidecars (FFmpeg LGPL e Codex): `scripts/fetch-sidecars.sh` no macOS ou `scripts/fetch-sidecars.ps1` no Windows. Sem eles o build falha com ``resource path `binaries/codex-...` doesn't exist``. Detalhes, versões e licenças em [`scripts/README-sidecars.md`](scripts/README-sidecars.md).
+## Gerar localmente
 
-## Transcrição
+Pré-requisitos:
 
-- Upload de áudio/vídeo e conversão via FFmpeg.
-- Gravação via MediaRecorder em blocos curtos (quase em tempo real; não é streaming palavra a palavra).
-- O modelo padrão da interface é Large V3 Turbo.
-- A transcrição é executada localmente.
+- **macOS:** Xcode Command Line Tools (`xcode-select --install`), Rust, Node.js, CMake.
+- **Windows:** Visual Studio Build Tools (carga de trabalho C++), Rust, Node.js, CMake, LLVM.
 
-## AI Summary Engine
-
-1. Selecione o provedor e formato.
-2. Para OpenAI, Anthropic ou Gemini, salve uma chave de API. Ela é guardada no macOS Keychain.
-3. Para Ollama, instale e inicie o Ollama e baixe um modelo, por exemplo:
+Passos (na raiz do repositório). Os sidecars (FFmpeg e Codex) precisam estar em `src-tauri/binaries/` **antes** de qualquer comando `cargo` ou `tauri`:
 
 ```bash
-ollama pull qwen3:8b
+npm ci
+scripts/fetch-sidecars.sh          # macOS; no Windows: powershell -ExecutionPolicy Bypass -File scripts\fetch-sidecars.ps1
+npm run tauri build
 ```
 
-4. Gere um resumo ou compare os quatro provedores em paralelo.
+No macOS o FFmpeg é compilado do código-fonte na primeira vez (fica em cache). Detalhes em [`scripts/README-sidecars.md`](scripts/README-sidecars.md). Testes: `cd src-tauri && cargo test` e `npm run test:ui`.
 
-Formatos incluídos: executivo, detalhado, acadêmico, reunião/ata, aula/estudo, podcast e personalizado.
+## Licenças de terceiros
 
-Transcrições longas são divididas em blocos de até aproximadamente 22 mil caracteres, resumidas individualmente e consolidadas (map-reduce). Isso aumenta o número de chamadas e o custo nos provedores de nuvem.
+O texto completo das licenças e os avisos acompanham o app (pasta `licenses` dentro do pacote; fontes em [`src-tauri/licenses/`](src-tauri/licenses/)) e aparecem em **Configurações → Sobre**.
 
-### Autenticação: o que a assinatura inclui
+| Componente | Licença |
+|---|---|
+| [whisper.cpp](https://github.com/ggml-org/whisper.cpp) 1.8.3 | MIT |
+| FFmpeg | LGPL (veja abaixo) |
+| [Codex CLI](https://github.com/openai/codex) 0.172.0 | Apache-2.0 |
+| [marked](https://github.com/markedjs/marked) 18.2.1 | MIT |
+| [DOMPurify](https://github.com/cure53/DOMPurify) 3.4.18 | Apache-2.0 ou MPL-2.0 |
 
-- **ChatGPT:** a integração por API key está implementada. A OpenAI também documenta Sign in with ChatGPT para aplicativos open-source locais elegíveis, com consentimento específico para uso do plano. Esse OAuth ainda requer registrar/configurar o cliente e cumprir o fluxo oficial; não está ativado nesta versão. Não reutilize cookies, senhas ou tokens da sessão web.
-- **Claude:** use uma chave da Anthropic Console. Assinaturas Claude.ai Pro/Max não são chaves de API e não podem ser usadas como credencial de um aplicativo terceiro. Linked billing exige organização Claude Platform elegível, não assinatura Claude.ai.
-- **Gemini:** use uma chave Gemini API. A assinatura Google AI e a cobrança/limites da Gemini API são produtos separados.
-- **Ollama:** chamadas locais sem chave e sem envio do texto para a nuvem.
+### FFmpeg
 
-As chaves de API são cobradas conforme a conta/plano do respectivo provedor e podem gerar custos. Verifique limites e preços antes de comparar vários provedores.
+O FFmpeg é distribuído como executável separado (não é vinculado ao app) e **nunca** com `--enable-gpl` ou `--enable-nonfree`.
 
-## Endpoints
+- **macOS:** FFmpeg 9.1 compilado do código-fonte oficial em uma configuração mínima, sob **LGPL 2.1 ou posterior** (`LGPL-2.1-or-later`). Código-fonte desta versão: <https://ffmpeg.org/releases/ffmpeg-9.1.tar.xz>. Script de build, com as flags exatas: [`scripts/build-ffmpeg-macos.sh`](scripts/build-ffmpeg-macos.sh).
+- **Windows:** build `win64-lgpl` do [BtbN/FFmpeg-Builds](https://github.com/BtbN/FFmpeg-Builds), FFmpeg n9.0.2-39-g7adfbe40dc, sob **LGPL 3.0 ou posterior** (`LGPL-3.0-or-later`; esse build sempre usa `--enable-version3`). Release usada: <https://github.com/BtbN/FFmpeg-Builds/releases/tag/autobuild-2026-10-31-12-59>. Código-fonte do FFmpeg nessa revisão: <https://github.com/FFmpeg/FFmpeg/archive/7adfbe40dcde598f93a6963d2f7b22cd75202ccc.tar.gz>.
 
-- `GET /api/status`
-- `POST /api/transcribe` multipart: `file`, `model`, `language`
-- `GET /api/providers`
-- `PUT /api/providers/{openai|anthropic|gemini}/credential`
-- `DELETE /api/providers/{openai|anthropic|gemini}/credential`
-- `GET /api/providers/ollama/models`
-- `POST /api/summarize`
-- `POST /api/compare`
-
-## Limitações conhecidas desta entrega
-
-- OAuth Sign in with ChatGPT ainda não está ligado; API key OpenAI funciona.
-- Claude Linked Billing/OAuth não está implementado; API key Anthropic funciona.
-- Gemini usa API key.
-- Comparação dispara chamadas aos quatro provedores selecionados, incluindo os que não estiverem configurados; os erros aparecem individualmente e não interrompem os outros.
-- Gravação em blocos pode cortar frases nos limites. Para gravações longas com máxima continuidade, grave o arquivo completo e transcreva depois.
-- O resumo envia o texto ao provedor selecionado. Não envie transcrições confidenciais para nuvem sem avaliar consentimento e privacidade.
-- Não exponha o servidor na rede. Ele foi projetado para uso local e não tem autenticação multiusuário/CSRF para acesso remoto.
-
-## Próximas evoluções
-
-- OAuth Sign in with ChatGPT oficial para cliente open-source local.
-- SQLite para histórico, projetos, transcrições e resumos.
-- Gerenciador visual de modelos Whisper e Ollama.
-- Exportação Markdown/JSON e resumo com timestamps/citações por segmento.
-- Jobs em background, cancelamento e progresso de transcrições/resumos longos.
-- Empacotamento como aplicativo macOS.
+**Oferta de código-fonte:** o código-fonte correspondente aos binários do FFmpeg distribuídos neste projeto está nos links acima e em [`scripts/`](scripts/) (versões e SHA-256 em [`scripts/sidecars.lock.json`](scripts/sidecars.lock.json)). Se algum link deixar de funcionar, abra uma issue em <https://github.com/lucas1dev/localtranscriber/issues> e o código será fornecido. Você pode trocar o FFmpeg embutido por uma versão modificada sua.

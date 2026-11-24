@@ -179,3 +179,5 @@ input[type=checkbox], input[type=radio] { accent-color: var(--accent); }
   .settings-layout { grid-template-columns: 1fr; }
   .side { grid-auto-flow: column; overflow-x: auto; }
 }
+.license-list { margin: 6px 0 0; padding-left: 18px; font-size: 13px; }
+.license-list a { color: inherit; }

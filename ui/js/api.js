@@ -38,7 +38,7 @@ export const api = {
   pickAudioFile: () => window.__TAURI__.dialog.open({
     multiple: false,
     directory: false,
-    filters: [{ name: 'Áudio e vídeo', extensions: ['mp3', 'wav', 'm4a', 'mp4', 'mov', 'webm', 'ogg', 'flac', 'aac'] }],
+    filters: [{ name: 'Áudio e vídeo', extensions: ['mp3', 'wav', 'm4a', 'mp4', 'mov', 'webm', 'ogg', 'flac', 'aac', 'aif', 'aiff'] }],
   }),
   // Diálogo "Salvar como"; devolve o caminho escolhido ou null se cancelado.
   pickSavePath: (defaultPath, filters) => window.__TAURI__.dialog.save({ defaultPath, filters }),

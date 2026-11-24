@@ -85,8 +85,8 @@ pub fn exec_args(system: &str, model: Option<&str>, safe_mode: bool) -> Vec<OsSt
     args
 }
 
-/// Se o `claude` em `bin` aceita `--safe-mode`, lido do `--help` na primeira vez e
-/// guardado por caminho do executável.
+/// Se o `claude` em `bin` aceita `--safe-mode`, lido do `--help` na primeira vez que ele
+/// roda e guardado por caminho do executável.
 pub async fn supports_safe_mode(bin: &Path) -> bool {
     static CACHE: OnceLock<Mutex<HashMap<PathBuf, bool>>> = OnceLock::new();
     let cache = CACHE.get_or_init(Mutex::default);
@@ -97,7 +97,8 @@ pub async fn supports_safe_mode(bin: &Path) -> bool {
     let env = child_env(bin);
     let supported = match cli::run("Claude Code", bin, &args, &env, None, HELP_TIMEOUT).await {
         Ok(out) => out.code == 0 && out.stdout.contains("--safe-mode"),
-        Err(_) => false,
+        // Falha ao executar: usa a alternativa agora, sem guardar (tenta de novo depois).
+        Err(_) => return false,
     };
     cache
         .lock()
@@ -322,6 +323,13 @@ mod tests {
             assert!(!supports_safe_mode(&without).await);
             let broken = script(tmp.path(), "quebrado", "exit 1");
             assert!(!supports_safe_mode(&broken).await);
+            // Falha ao executar não fica guardada: quando o `claude` volta a rodar, é detectado.
+            let later = tmp.path().join("depois");
+            std::fs::write(&later, "#!/bin/sh\necho '  --safe-mode'\n").unwrap();
+            assert!(!supports_safe_mode(&later).await);
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&later, std::fs::Permissions::from_mode(0o755)).unwrap();
+            assert!(supports_safe_mode(&later).await);
         }
 
         #[tokio::test]

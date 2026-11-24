@@ -63,6 +63,18 @@ export function pickMicId(inputs, savedId) {
   return (inputs.find((i) => i.is_default) || inputs[0]).id;
 }
 
+// Fim da gravação: o resultado (parcial ou não) vai para o passo ②, mas um erro
+// da sessão (mesmo um que chegou enquanto a pessoa parava) continua no aviso.
+export function recordingResult(state, transcript, { mac, source, sessionError }) {
+  const patch = afterRecording(state, transcript, { mac, source });
+  return sessionError ? { ...patch, error: sessionError } : patch;
+}
+
+// stop_recording falhou: mostra a causa original da sessão primeiro, se houve.
+export function recordingFailure(sessionError, stopError) {
+  return sessionError ? `${sessionError} (${stopError})` : stopError;
+}
+
 // Uma gravação por vez. Os ouvintes só existem entre start() e o fim de stop(),
 // e eventos que chegam fora desse intervalo são ignorados.
 // `deps` permite trocar api/on nos testes.

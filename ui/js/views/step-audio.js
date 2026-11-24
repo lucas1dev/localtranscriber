@@ -5,8 +5,8 @@ import {
   afterTranscribe, failJob, needsReplaceConfirm, openSettings, pasteText, startJob,
 } from '../flow.js';
 import {
-  SILENCE_HINT, SPEAKER_LABEL, afterRecording, createRecorder, isMacUserAgent, levelPercent, liveLine, pickMicId,
-  pickSource, showHeadphoneHint, showMicPicker, showSilenceHint,
+  SILENCE_HINT, SPEAKER_LABEL, createRecorder, isMacUserAgent, levelPercent, liveLine, pickMicId,
+  pickSource, recordingFailure, recordingResult, showHeadphoneHint, showMicPicker, showSilenceHint,
 } from '../recorder.js';
 
 export const LANGUAGES = [
@@ -31,6 +31,8 @@ export function mountStepAudio(root, store) {
     recSource: null, startedAt: 0, systemPeak: 0,
   };
   let recorder = null;
+  // Erro que a sessão avisou na gravação atual; sobrevive ao resultado de stop().
+  let sessionError = null;
   let clockTimer = null;
   let optionsKey = null;
 
@@ -205,7 +207,7 @@ export function mountStepAudio(root, store) {
     if (!patch.job) return;
     micLive.replaceChildren();
     setLevels(null);
-    let sessionError = null;
+    sessionError = null;
     recorder = createRecorder({
       onText: appendLive,
       onLevel: setLevels,
@@ -214,7 +216,7 @@ export function mountStepAudio(root, store) {
       onError: (message, deferred) => {
         sessionError = message;
         store.set({ error: message });
-        if (!deferred) stopMic(() => sessionError);
+        if (!deferred) stopMic();
       },
     });
     const source = ui.source || pickSource(store.get().settings);
@@ -242,27 +244,25 @@ export function mountStepAudio(root, store) {
     ui.elapsed = 0;
     clockTimer = setInterval(() => { ui.elapsed += 1; micTime.textContent = clock(ui.elapsed); }, 1000);
     render();
-    if (pending) stopMic(() => sessionError);
+    if (pending) stopMic();
   }
 
-  async function stopMic(errorAfter) {
+  // Todo caminho (Finalizar, erro da sessão, erro na abertura) lê `sessionError`
+  // depois do stop: um erro que chega durante a parada também fica no aviso.
+  async function stopMic() {
     if (ui.micStopping || !recorder) return;
     ui.micStopping = true;
     stopClock();
     render();
     const r = recorder;
     const finish = () => { ui.micRunning = ui.micStopping = false; recorder = null; };
-    const keep = () => (typeof errorAfter === 'function' ? errorAfter() : null);
     try {
       const result = toTranscript(await r.stop());
       finish();
-      const patch = afterRecording(store.get(), result, { mac, source: ui.recSource });
-      store.set(keep() ? { ...patch, error: keep() } : patch);
+      store.set(recordingResult(store.get(), result, { mac, source: ui.recSource, sessionError }));
     } catch (e) {
       finish();
-      const original = keep();
-      const stopError = errorMessage(e);
-      store.set(failJob(store.get(), original ? `${original} (${stopError})` : stopError));
+      store.set(failJob(store.get(), recordingFailure(sessionError, errorMessage(e))));
     }
   }
 

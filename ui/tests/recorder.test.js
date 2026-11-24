@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   SPEAKER_LABEL, liveLine, levelPercent, pickSource, showMicPicker, showHeadphoneHint, pickMicId, createRecorder,
-  isMacUserAgent, silenceHint, showSilenceHint, SILENCE_HINT, SILENCE_HINT_MS, afterRecording,
+  isMacUserAgent, silenceHint, showSilenceHint, SILENCE_HINT, SILENCE_HINT_MS, afterRecording, recordingResult, recordingFailure,
 } from '../js/recorder.js';
 import { afterTranscribe, initialState } from '../js/flow.js';
 
@@ -150,4 +150,31 @@ test('afterRecording: sem fala no macOS com som do computador lembra a permissã
   // Com fala, igual ao arquivo.
   const t = { text: 'oi', segments: [] };
   assert.deepEqual(afterRecording(job, t, { mac: true, source: 'both' }), afterTranscribe(job, t));
+});
+
+test('erro da sessão durante o stop da pessoa chega ao onError e sobrevive ao resultado', async () => {
+  const f = fakeDeps();
+  let release;
+  f.deps.api.stopRecording = () => new Promise((r) => { release = r; });
+  let sessionError = null;
+  const rec = createRecorder({ onText() {}, onLevel() {}, onError: (m) => { sessionError = m; } }, f.deps);
+  const started = rec.start({ source: 'mic', micId: null, model: 'm', language: 'pt' });
+  await new Promise((r) => setImmediate(r));
+  f.release();
+  await started;
+  const stopping = rec.stop();
+  f.handlers['record://error']({ message: 'O microfone foi desconectado.' });
+  release({ text: 'oi', segments: [] });
+  const result = await stopping;
+  const job = { ...initialState, job: { kind: 'mic' } };
+  const patch = recordingResult(job, result, { mac: false, source: 'mic', sessionError });
+  assert.equal(patch.error, 'O microfone foi desconectado.');
+  assert.equal(patch.step, 2);
+  // Sem erro da sessão, o resultado normal.
+  assert.deepEqual(recordingResult(job, result, { mac: false, source: 'mic', sessionError: null }), afterTranscribe(job, result));
+});
+
+test('recordingFailure junta o erro da sessão e o do stop', () => {
+  assert.equal(recordingFailure(null, 'falhou'), 'falhou');
+  assert.equal(recordingFailure('mic caiu', 'falhou'), 'mic caiu (falhou)');
 });

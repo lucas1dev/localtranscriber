@@ -368,7 +368,19 @@ impl Worker {
                         break;
                     }
                 }
-                Err(RecvTimeoutError::Disconnected) => break,
+                Err(RecvTimeoutError::Disconnected) => {
+                    if self.stopping.load(Ordering::Relaxed) {
+                        break;
+                    }
+                    // A captura soltou a fila sem a gravação ter parado: no WASAPI
+                    // a cpal avisa o erro e encerra a thread dela. Sem `Failed`, a
+                    // sessão completaria esta fonte com silêncio para sempre.
+                    let fault = Fault::from_code(self.fault.load(Ordering::Relaxed))
+                        .unwrap_or(Fault::Other);
+                    self.flush();
+                    self.deliver(SourceMsg::Failed(fault.message(self.kind)));
+                    return;
+                }
             }
             if let Some(fault) = Fault::from_code(self.fault.load(Ordering::Relaxed)) {
                 self.flush();
@@ -481,6 +493,11 @@ impl Fault {
         };
         text.to_string()
     }
+}
+
+/// Mensagem de falha genérica da captura de `source`.
+pub(super) fn capture_failed(source: SourceKind) -> String {
+    Fault::Other.message(source)
 }
 
 /// Mensagem de permissão negada; só o macOS pede permissão.
@@ -637,6 +654,21 @@ mod tests {
         assert_eq!(to_f32(&[0.25f32]), vec![0.25]);
     }
 
+    fn worker(raw_rx: Receiver<Raw>, tx: SyncSender<SourceMsg>, kind: SourceKind, stopping: bool) -> (Worker, Arc<AtomicU8>) {
+        let fault = Arc::new(AtomicU8::new(0));
+        let worker = Worker {
+            raw_rx,
+            converter: None,
+            tx,
+            fault: fault.clone(),
+            stopping: Arc::new(AtomicBool::new(stopping)),
+            dropped: Arc::new(AtomicU64::new(0)),
+            kind,
+        };
+        (worker, fault)
+    }
+
+    /// Como o drop do `OpenSource`: marca a parada e solta a fila bruta.
     fn run_worker(packets: Vec<Raw>) -> Vec<SourceMsg> {
         let (raw_tx, raw_rx) = mpsc::sync_channel(packets.len() + 1);
         for p in packets {
@@ -644,17 +676,43 @@ mod tests {
         }
         drop(raw_tx);
         let (tx, rx) = mpsc::sync_channel(10_000);
-        Worker {
-            raw_rx,
-            converter: None,
-            tx,
-            fault: Arc::new(AtomicU8::new(0)),
-            stopping: Arc::new(AtomicBool::new(false)),
-            dropped: Arc::new(AtomicU64::new(0)),
-            kind: SourceKind::System,
-        }
-        .run();
+        worker(raw_rx, tx, SourceKind::System, true).0.run();
         rx.try_iter().collect()
+    }
+
+    #[test]
+    fn capture_thread_ending_with_fault_reports_it() {
+        // WASAPI: a cpal chama o callback de erro e encerra a thread de captura,
+        // soltando o remetente da fila bruta sem a gravação ter parado.
+        let (raw_tx, raw_rx) = mpsc::sync_channel(16);
+        let (tx, rx) = mpsc::sync_channel(16);
+        let (w, fault) = worker(raw_rx, tx, SourceKind::Mic, false);
+        record_fault(&fault, Fault::Disconnected);
+        drop(raw_tx);
+        w.run();
+        let msgs: Vec<SourceMsg> = rx.try_iter().collect();
+        assert_eq!(msgs.last(), Some(&SourceMsg::Failed("O microfone foi desconectado.".into())));
+    }
+
+    #[test]
+    fn capture_thread_ending_without_fault_is_a_failure() {
+        let (raw_tx, raw_rx) = mpsc::sync_channel(16);
+        let (tx, rx) = mpsc::sync_channel(16);
+        let (w, _) = worker(raw_rx, tx, SourceKind::Mic, false);
+        drop(raw_tx);
+        w.run();
+        let msgs: Vec<SourceMsg> = rx.try_iter().collect();
+        assert_eq!(msgs, [SourceMsg::Failed("A captura do microfone falhou.".into())]);
+    }
+
+    #[test]
+    fn raw_queue_closing_while_stopping_is_not_a_failure() {
+        let (raw_tx, raw_rx) = mpsc::sync_channel(16);
+        let (tx, rx) = mpsc::sync_channel(16);
+        let (w, _) = worker(raw_rx, tx, SourceKind::Mic, true);
+        drop(raw_tx);
+        w.run();
+        assert!(rx.try_iter().next().is_none());
     }
 
     fn packets(rate: u32, channels: u16, seconds: u32) -> Vec<Raw> {
@@ -716,16 +774,7 @@ mod tests {
         // célula de falha encerra a captura.
         let (raw_tx, raw_rx) = mpsc::sync_channel(1024);
         let (tx, rx) = mpsc::sync_channel(1024);
-        let fault = Arc::new(AtomicU8::new(0));
-        let worker = Worker {
-            raw_rx,
-            converter: None,
-            tx,
-            fault: fault.clone(),
-            stopping: Arc::new(AtomicBool::new(false)),
-            dropped: Arc::new(AtomicU64::new(0)),
-            kind: SourceKind::System,
-        };
+        let (worker, fault) = worker(raw_rx, tx, SourceKind::System, false);
         let handle = std::thread::spawn(move || worker.run());
         for p in packets(48_000, 1, 1) {
             raw_tx.send(p).unwrap();

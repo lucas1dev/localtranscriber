@@ -280,7 +280,15 @@ impl Live {
                         failed = Some(message);
                         break;
                     }
-                    Err(TryRecvError::Empty | TryRecvError::Disconnected) => break,
+                    Err(TryRecvError::Empty) => break,
+                    // Com a captura aberta, o canal só fecha se a thread de
+                    // conversão sumiu sem avisar: é uma falha, não silêncio.
+                    Err(TryRecvError::Disconnected) => {
+                        if self.capture.is_some() {
+                            failed = Some(devices::capture_failed(self.kind));
+                        }
+                        break;
+                    }
                 }
             }
         }
@@ -842,6 +850,53 @@ mod tests {
         assert_eq!(calls.load(Ordering::SeqCst), 1);
         assert_eq!(out.text, "b0 b1");
         assert!(!events.try_iter().any(|e| matches!(e, SessionEvent::Error { .. })));
+    }
+
+    #[test]
+    fn source_channel_closing_without_failed_reopens() {
+        // A thread de conversão sumiu sem avisar (pânico com a fila cheia, por
+        // exemplo): o canal fechado conta como falha, não como silêncio.
+        let clock = FakeClock::new();
+        let (old_tx, opened, old_dropped) = fake_source(None);
+        let (reopen, new_sources, calls, _) = counting_reopen(None);
+        let (sink, events) = sink();
+        let session = Session::new(
+            vec![spec(SourceKind::Mic, None, opened, reopen)],
+            fake_transcriber(),
+            sink,
+            clock.plain_env(),
+            clock.now(),
+        )
+        .unwrap();
+        feed(&old_tx, &clock, 12);
+        drop(old_tx);
+        let new_tx = new_sources.recv_timeout(WAIT).expect("reabriu o microfone");
+        assert!(old_dropped.load(Ordering::SeqCst));
+        feed(&new_tx, &clock, 12);
+        let out = session.stop().unwrap();
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        assert_eq!(out.text, "b0 b1");
+        assert!(!events.try_iter().any(|e| matches!(e, SessionEvent::Error { .. })));
+    }
+
+    #[test]
+    fn source_channel_closing_gives_up_like_a_failure() {
+        let clock = FakeClock::new();
+        let (tx, opened, _) = fake_source(None);
+        let (sink, events) = sink();
+        let session = Session::new(
+            vec![spec(SourceKind::System, None, opened, no_reopen())],
+            fake_transcriber(),
+            sink,
+            clock.plain_env(),
+            clock.now(),
+        )
+        .unwrap();
+        feed(&tx, &clock, 12);
+        drop(tx);
+        let e = wait_for(&events, |e| matches!(e, SessionEvent::Error { .. }));
+        assert_eq!(e, SessionEvent::Error { message: "sem reabrir".into() });
+        assert_eq!(session.stop().unwrap().text, "b0");
     }
 
     #[test]

@@ -5,7 +5,7 @@
 #     bibliotecas fora do sistema;
 #   - codex --version igual à versão do lock;
 #   - o ffmpeg empacotado decodifica os formatos aceitos pelo app (mp3, m4a,
-#     webm, ogg, flac, wav e mp4 com vídeo), com os mesmos argumentos de
+#     webm, ogg, flac, wav PCM e μ-law, aiff e mp4 com vídeo), com os mesmos argumentos de
 #     transcribe::ffmpeg_args. A mídia de teste é gerada com o ffmpeg do
 #     PATH (ex.: Homebrew) ou de HOST_FFMPEG=<caminho>; sem ele, a verificação
 #     falha. Para pular de propósito essa parte, use SKIP_DECODE=1.
@@ -93,10 +93,12 @@ else
   gen "${tone[@]}" -c:a vorbis -strict experimental -ac 2 "$media/audio.ogg"
   gen "${tone[@]}" -c:a flac "$media/audio.flac"
   gen "${tone[@]}" -c:a pcm_s16le "$media/audio.wav"
+  gen "${tone[@]}" -c:a pcm_s16be "$media/audio.aiff"
+  gen "${tone[@]}" -c:a pcm_mulaw -ar 8000 "$media/audio-mulaw.wav"
   gen -f lavfi -i "testsrc=size=160x120:rate=10:duration=2" "${tone[@]}" \
     -c:v libx264 -pix_fmt yuv420p -c:a aac -shortest "$media/Vídeo com áudio.mp4"
 
-  for input in "$media"/audio.* "$media/Vídeo com áudio.mp4"; do
+  for input in "$media"/audio.* "$media/audio-mulaw.wav" "$media/Vídeo com áudio.mp4"; do
     name="$(basename "$input")"
     # Mesmos argumentos de transcribe::ffmpeg_args.
     if "$FFMPEG" -nostdin -hide_banner -loglevel error -i "$input" \

@@ -49,8 +49,8 @@ A licença de cada alvo fica em `ffmpeg.<triple>.license` no lock:
   --disable-gpl --disable-nonfree --disable-autodetect --enable-pthreads \
   --disable-everything --disable-network --disable-doc --disable-ffplay \
   --disable-ffprobe --enable-ffmpeg \
-  --enable-demuxer=mov,mp3,wav,ogg,matroska,webm_dash_manifest,flac,aac \
-  --enable-decoder=aac,mp3,mp3float,opus,vorbis,flac,pcm_s16le,pcm_s24le,pcm_f32le,alac \
+  --enable-demuxer=mov,mp3,wav,aiff,ogg,matroska,webm_dash_manifest,flac,aac \
+  --enable-decoder=aac,mp3,mp3float,opus,vorbis,flac,pcm_s16le,pcm_s24le,pcm_f32le,alac,pcm_s16be,pcm_s24be,pcm_s32le,pcm_u8,pcm_mulaw,pcm_alaw,pcm_f64le,adpcm_ima_wav,adpcm_ms \
   --enable-parser=aac,mpegaudio,opus,vorbis,flac \
   --enable-protocol=file,pipe --enable-filter=aresample,aformat,anull \
   --enable-encoder=pcm_f32le --enable-muxer=pcm_f32le --enable-swresample \

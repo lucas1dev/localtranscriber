@@ -18,6 +18,7 @@ use std::time::{Duration, Instant};
 use super::devices::{self, OpenSource, SourceKind, SourceMsg, MIC_GONE};
 use super::merge::{interleave, labeled_text, shift_segments};
 use super::track::{level, Track};
+use super::SAMPLE_RATE;
 use crate::error::AppError;
 use crate::transcribe::{join_text, Segment};
 
@@ -29,8 +30,11 @@ const TICK: Duration = Duration::from_millis(100);
 const PAD_MARGIN: Duration = Duration::from_millis(500);
 /// A cada quantos ciclos conferir se a saída padrão mudou (1 s).
 const OUTPUT_POLL_TICKS: u64 = 10;
-/// Tentativas seguidas de reabrir uma fonte antes de desistir.
+/// Reaberturas seguidas (sem a fonte se firmar) antes de desistir.
 const MAX_TRIES: u32 = 3;
+/// Áudio que uma fonte reaberta precisa entregar para zerar a contagem (5 s): uma
+/// fonte que abre e logo falha de novo continua contando, e a gravação para.
+const HEALTHY_SAMPLES: usize = 5 * SAMPLE_RATE as usize;
 /// Ciclos de espera entre uma tentativa de reabrir e a próxima (500 ms).
 const RETRY_TICKS: u32 = 5;
 /// Sem áudio novo por tantos ciclos, o nível cai para zero (500 ms).
@@ -227,8 +231,12 @@ struct Live {
     rx: Option<Receiver<SourceMsg>>,
     reopen: Reopen,
     track: Track,
-    /// Tentativas seguidas de reabrir que falharam.
+    /// Tentativas de reabrir desde a última vez que a fonte se firmou
+    /// (`HEALTHY_SAMPLES` entregues depois de reabrir). Troca de saída bem-sucedida
+    /// não conta.
     tries: u32,
+    /// Amostras entregues desde a última reabertura.
+    since_reopen: usize,
     /// Ciclos até a próxima tentativa, com a fonte caída.
     retry_in: u32,
     /// Áudio drenado no último ciclo.
@@ -247,6 +255,7 @@ impl Live {
             reopen: spec.reopen,
             track: Track::new(start),
             tries: 0,
+            since_reopen: 0,
             retry_in: 0,
             pending: Vec::new(),
             level: 0.0,
@@ -276,6 +285,12 @@ impl Live {
         if !self.pending.is_empty() {
             self.track.push(&self.pending, now);
         }
+        if self.tries > 0 {
+            self.since_reopen += self.pending.len();
+            if self.since_reopen >= HEALTHY_SAMPLES {
+                self.tries = 0;
+            }
+        }
         failed
     }
 
@@ -303,23 +318,26 @@ impl Live {
     fn install(&mut self, opened: Opened) {
         self.capture = Some(opened.capture);
         self.rx = Some(opened.rx);
-        self.tries = 0;
+        self.since_reopen = 0;
     }
 
-    /// A captura parou. Microfone desconectado encerra a gravação; qualquer outra
-    /// falha deixa a fonte caída, para reabrir.
+    /// A captura parou. Microfone desconectado, ou uma fonte que já foi reaberta
+    /// `MAX_TRIES` vezes sem se firmar, encerra a gravação; qualquer outra falha
+    /// deixa a fonte caída, para reabrir.
     fn on_failed(&mut self, message: String, now: Instant) -> Result<(), String> {
         self.close(now);
         if self.kind == SourceKind::Mic && message == MIC_GONE {
+            return Err(message);
+        }
+        if self.tries >= MAX_TRIES {
             return Err(message);
         }
         self.retry_in = 0;
         Ok(())
     }
 
-    /// Conta uma tentativa de reabrir que falhou; erro quando acabam as tentativas.
+    /// Erro quando acabam as tentativas; senão espera para tentar de novo.
     fn reopen_failed(&mut self, err: AppError) -> Result<(), String> {
-        self.tries += 1;
         self.retry_in = RETRY_TICKS;
         if self.tries >= MAX_TRIES {
             Err(err.to_string())
@@ -336,6 +354,7 @@ impl Live {
                     self.retry_in -= 1;
                     return Ok(());
                 }
+                self.tries += 1;
                 match (self.reopen)() {
                     Ok(opened) => {
                         self.install(opened);
@@ -358,7 +377,10 @@ impl Live {
                         self.install(opened);
                         Ok(())
                     }
-                    Err(e) => self.reopen_failed(e),
+                    Err(e) => {
+                        self.tries += 1;
+                        self.reopen_failed(e)
+                    }
                 }
             }
             Some(_) => Ok(()),
@@ -834,6 +856,81 @@ mod tests {
         assert_eq!(e, SessionEvent::Error { message: "Nenhuma saída de som encontrada.".into() });
         assert_eq!(calls.load(Ordering::SeqCst), 3);
         assert_eq!(session.stop().unwrap().text, "b0");
+    }
+
+    /// Reabertura que sempre abre; cada fonte nova entrega `secs` segundos e, até a
+    /// chamada `fail_until`, já manda `Failed` em seguida. Avisa o número da chamada.
+    fn flaky_reopen(
+        secs: usize,
+        fail_until: usize,
+        message: &'static str,
+    ) -> (Reopen, Receiver<usize>, Arc<AtomicUsize>) {
+        let (called_tx, called_rx) = mpsc::channel();
+        let calls = Arc::new(AtomicUsize::new(0));
+        let reopen: Reopen = {
+            let calls = calls.clone();
+            Box::new(move || {
+                let n = calls.fetch_add(1, Ordering::SeqCst) + 1;
+                let (tx, rx) = mpsc::sync_channel(4096);
+                for _ in 0..secs {
+                    tx.send(second(0.1)).unwrap();
+                }
+                if n <= fail_until {
+                    tx.send(SourceMsg::Failed(message.into())).unwrap();
+                }
+                let _ = called_tx.send(n);
+                let capture = FakeCapture { output: None, dropped: Arc::new(AtomicBool::new(false)) };
+                Ok(Opened { capture: Box::new(capture), rx })
+            })
+        };
+        (reopen, called_rx, calls)
+    }
+
+    #[test]
+    fn reopened_source_failing_at_once_gives_up_after_three_tries() {
+        const FAILED: &str = "A captura do som do computador falhou.";
+        let clock = FakeClock::new();
+        let (tx, opened, _) = fake_source(None);
+        let (reopen, _called, calls) = flaky_reopen(0, usize::MAX, FAILED);
+        let (sink, events) = sink();
+        let session = Session::new(
+            vec![spec(SourceKind::System, None, opened, reopen)],
+            fake_transcriber(),
+            sink,
+            clock.plain_env(),
+        )
+        .unwrap();
+        feed(&tx, &clock, 12);
+        tx.send(SourceMsg::Failed(FAILED.into())).unwrap();
+        let e = wait_for(&events, |e| matches!(e, SessionEvent::Error { .. }));
+        assert_eq!(e, SessionEvent::Error { message: FAILED.into() });
+        assert_eq!(session.stop().unwrap().text, "b0");
+        assert_eq!(calls.load(Ordering::SeqCst), 3);
+        assert!(!events.try_iter().any(|e| matches!(e, SessionEvent::Error { .. })));
+    }
+
+    #[test]
+    fn source_that_recovers_keeps_recording_past_three_failures() {
+        const FAILED: &str = "A captura do microfone falhou.";
+        let clock = FakeClock::new();
+        let (tx, opened, _) = fake_source(None);
+        // Cada reabertura entrega 6 s antes de falhar; a quinta fica de pé.
+        let (reopen, called, calls) = flaky_reopen(6, 4, FAILED);
+        let (sink, events) = sink();
+        let session = Session::new(
+            vec![spec(SourceKind::Mic, None, opened, reopen)],
+            fake_transcriber(),
+            sink,
+            clock.plain_env(),
+        )
+        .unwrap();
+        tx.send(SourceMsg::Failed(FAILED.into())).unwrap();
+        while called.recv_timeout(WAIT).expect("reabriu de novo") < 5 {}
+        let out = session.stop().unwrap();
+        assert_eq!(calls.load(Ordering::SeqCst), 5);
+        assert!(!events.try_iter().any(|e| matches!(e, SessionEvent::Error { .. })));
+        // 5 × 6 s = 30 s: dois blocos e uma sobra.
+        assert_eq!(out.text, "b0 b1 b2");
     }
 
     #[test]

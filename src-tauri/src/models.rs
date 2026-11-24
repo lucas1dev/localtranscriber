@@ -155,8 +155,37 @@ pub fn import_file(src: &Path, models_dir: &Path) -> Result<String, AppError> {
         .map(|m| m.id)
         .ok_or_else(unrecognized)?;
     std::fs::create_dir_all(models_dir)?;
-    std::fs::copy(src, models_dir.join(file_name(id)))?;
+    let dst = models_dir.join(file_name(id));
+    if same_file(src, &dst) {
+        // Copiar um arquivo sobre ele mesmo o zeraria.
+        return Ok(id.to_string());
+    }
+    // Sufixo próprio: não colide com o `.part` de um download do mesmo modelo.
+    let part = models_dir.join(format!("{}.import.part", file_name(id)));
+    let copied = std::fs::copy(src, &part).and_then(|_| replace(&part, &dst));
+    if let Err(e) = copied {
+        let _ = std::fs::remove_file(&part);
+        return Err(e.into());
+    }
     Ok(id.to_string())
+}
+
+fn same_file(a: &Path, b: &Path) -> bool {
+    match (a.canonicalize(), b.canonicalize()) {
+        (Ok(a), Ok(b)) => a == b,
+        _ => false,
+    }
+}
+
+/// Renomeia `from` para `to`, substituindo `to` (no Windows o rename falha se `to` existe).
+fn replace(from: &Path, to: &Path) -> std::io::Result<()> {
+    match std::fs::rename(from, to) {
+        Err(_) if cfg!(windows) && to.exists() => {
+            std::fs::remove_file(to)?;
+            std::fs::rename(from, to)
+        }
+        r => r,
+    }
 }
 
 #[cfg(test)]
@@ -332,6 +361,37 @@ mod tests {
         assert_eq!(import_file(&src, &dir).unwrap(), "small");
         assert_eq!(std::fs::read(dir.join("ggml-small.bin")).unwrap(), b"abc");
         assert!(src.exists());
+    }
+
+    #[test]
+    fn import_of_file_already_in_models_dir_keeps_it() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("models");
+        std::fs::create_dir_all(&dir).unwrap();
+        let model = dir.join("ggml-small.bin");
+        std::fs::write(&model, vec![9u8; 4096]).unwrap();
+        assert_eq!(import_file(&model, &dir).unwrap(), "small");
+        // Mesmo arquivo por outro caminho (com `..`).
+        let other = dir.join("..").join("models").join("ggml-small.bin");
+        assert_eq!(import_file(&other, &dir).unwrap(), "small");
+        assert_eq!(std::fs::metadata(&model).unwrap().len(), 4096);
+        assert!(state(&list(&dir, "small"), "small").installed);
+    }
+
+    #[test]
+    fn import_goes_through_part_and_replaces_old_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("models");
+        std::fs::create_dir_all(&dir).unwrap();
+        // Sobra de uma importação interrompida: não conta como instalado.
+        std::fs::write(dir.join("ggml-small.bin.import.part"), b"meio").unwrap();
+        assert!(!state(&list(&dir, "small"), "small").installed);
+        std::fs::write(dir.join("ggml-small.bin"), b"antigo e maior").unwrap();
+        let src = tmp.path().join("ggml-small.bin");
+        std::fs::write(&src, b"novo").unwrap();
+        assert_eq!(import_file(&src, &dir).unwrap(), "small");
+        assert_eq!(std::fs::read(dir.join("ggml-small.bin")).unwrap(), b"novo");
+        assert!(!dir.join("ggml-small.bin.import.part").exists());
     }
 
     #[test]

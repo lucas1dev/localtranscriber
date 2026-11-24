@@ -32,15 +32,26 @@ export function pickMicId(inputs, savedId) {
 
 // Uma gravação por vez. Os ouvintes só existem entre start() e o fim de stop(),
 // e eventos que chegam fora desse intervalo são ignorados.
-export function createRecorder({ onText, onLevel, onError }) {
+// `deps` permite trocar api/on nos testes.
+export function createRecorder({ onText, onLevel, onError }, deps = { api, on }) {
+  const { api: backend, on: listen } = deps;
   let active = false;
+  let starting = false;
+  let pendingError = null;
   let unlisten = [];
 
   async function subscribe() {
     const subs = [
-      on('record://text', (p) => { if (active) onText(p); }),
-      on('record://level', (p) => { if (active) onLevel(p); }),
-      on('record://error', (p) => { if (active) onError(p?.message || 'A gravação foi interrompida.'); }),
+      listen('record://text', (p) => { if (active) onText(p); }),
+      listen('record://level', (p) => { if (active) onLevel(p); }),
+      listen('record://error', (p) => {
+        if (!active) return;
+        const message = p?.message || 'A gravação foi interrompida.';
+        // O backend só guarda a gravação quando start_recording termina: durante a
+        // abertura o erro fica na fila (start() devolve a mensagem) e o aviso aparece já.
+        if (starting) pendingError = message;
+        onError(message, starting);
+      }),
     ];
     unlisten = await Promise.all(subs);
   }
@@ -52,20 +63,27 @@ export function createRecorder({ onText, onLevel, onError }) {
   }
 
   return {
+    get starting() { return starting; },
+    // Devolve a mensagem de um erro de sessão ocorrido durante a abertura (ou null).
     async start({ source, micId, model, language }) {
-      await subscribe();
-      active = true;
+      starting = true;
+      pendingError = null;
       try {
-        await api.startRecording(source, micId, model, language);
+        await subscribe();
+        active = true;
+        await backend.startRecording(source, micId, model, language);
       } catch (e) {
         unsubscribe();
         throw e;
+      } finally {
+        starting = false;
       }
+      return pendingError;
     },
     // Devolve o resultado do backend (snake_case); sempre solta os ouvintes.
     async stop() {
       try {
-        return await api.stopRecording();
+        return await backend.stopRecording();
       } finally {
         unsubscribe();
       }

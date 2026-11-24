@@ -23,7 +23,7 @@ const toTranscript = (t) => ({
 
 export function mountStepAudio(root, store) {
   const ui = {
-    tab: 'file', path: null, model: '', language: null, confirming: false, micRunning: false, micStopping: false, elapsed: 0,
+    tab: 'file', path: null, model: '', language: null, confirming: false, micRunning: false, micStopping: false, starting: false, elapsed: 0,
     source: null, inputs: [], micId: null, inputsLoaded: false,
   };
   let recorder = null;
@@ -197,17 +197,26 @@ export function mountStepAudio(root, store) {
       onText: appendLive,
       onLevel: setLevels,
       // O backend já encerrou a sessão: mostra o aviso e recolhe o resultado parcial.
-      onError: (message) => { sessionError = message; store.set({ error: message }); stopMic(() => sessionError); },
+      // Durante a abertura (`deferred`) a coleta espera start() terminar.
+      onError: (message, deferred) => {
+        sessionError = message;
+        store.set({ error: message });
+        if (!deferred) stopMic(() => sessionError);
+      },
     });
     const source = ui.source || pickSource(store.get().settings);
+    ui.starting = true;
+    render();
+    let pending;
     try {
-      await recorder.start({ source, micId: showMicPicker(source) ? ui.micId : null, model: ui.model, language: ui.language });
+      pending = await recorder.start({ source, micId: showMicPicker(source) ? ui.micId : null, model: ui.model, language: ui.language });
     } catch (e) {
       recorder = null;
+      ui.starting = false;
       store.set(failJob(store.get(), errorMessage(e)));
       return;
     }
-    if (ui.micStopping) return; // o backend encerrou a sessão durante a abertura; stopMic cuida do resto
+    ui.starting = false;
     // Lembra a escolha (o backend já salvou).
     const cur = store.get().settings;
     if (cur) {
@@ -217,6 +226,7 @@ export function mountStepAudio(root, store) {
     ui.elapsed = 0;
     clockTimer = setInterval(() => { ui.elapsed += 1; micTime.textContent = clock(ui.elapsed); }, 1000);
     render();
+    if (pending) stopMic(() => sessionError);
   }
 
   async function stopMic(errorAfter) {
@@ -226,15 +236,17 @@ export function mountStepAudio(root, store) {
     render();
     const r = recorder;
     const finish = () => { ui.micRunning = ui.micStopping = false; recorder = null; };
+    const keep = () => (typeof errorAfter === 'function' ? errorAfter() : null);
     try {
       const result = toTranscript(await r.stop());
       finish();
-      const keep = typeof errorAfter === 'function' ? errorAfter() : null;
       const patch = afterTranscribe(store.get(), result);
-      store.set(keep ? { ...patch, error: keep } : patch);
+      store.set(keep() ? { ...patch, error: keep() } : patch);
     } catch (e) {
       finish();
-      store.set(failJob(store.get(), errorMessage(e)));
+      const original = keep();
+      const stopError = errorMessage(e);
+      store.set(failJob(store.get(), original ? `${original} (${stopError})` : stopError));
     }
   }
 
@@ -272,7 +284,10 @@ export function mountStepAudio(root, store) {
     micPane.hidden = ui.tab !== 'mic';
     dropName.textContent = ui.path ? baseName(ui.path) : '';
     drop.disabled = busy;
-    if (!ui.micRunning && !(busy && s.job.kind === 'mic')) {
+    if (ui.starting) {
+      micBtn.textContent = 'Iniciando…';
+      micBtn.disabled = true;
+    } else if (!ui.micRunning && !(busy && s.job.kind === 'mic')) {
       micBtn.textContent = 'Gravar';
       micBtn.disabled = !canGo();
     } else if (ui.micRunning) {

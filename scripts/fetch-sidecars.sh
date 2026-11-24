@@ -4,6 +4,11 @@
 #   - ffmpeg-aarch64-apple-darwin: compilado por build-ffmpeg-macos.sh.
 # Aborta com código != 0 se algum SHA-256 não bater com o lock.
 # No Windows, use scripts/fetch-sidecars.ps1.
+#
+# RODE ANTES de `cargo build`, `cargo test` ou `npm run tauri build`: o
+# tauri-build exige os sidecars de bundle.externalBin e, sem eles, falha com
+# "resource path `binaries/codex-...` doesn't exist". Detalhes e licenças em
+# scripts/README-sidecars.md.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -24,7 +29,7 @@ download_verified() {
   local url="$1" file="$2" expected="$3" actual
   if [ ! -f "$file" ]; then
     echo "Baixando $url..."
-    curl --fail -L -sS -o "$file.part" "$url"
+    curl --proto '=https' --proto-redir '=https' --fail -L -sS -o "$file.part" "$url"
     mv "$file.part" "$file"
   fi
   actual="$(shasum -a 256 "$file" | awk '{print $1}')"

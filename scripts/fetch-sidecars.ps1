@@ -4,6 +4,11 @@
 #   - ffmpeg-x86_64-pc-windows-msvc.exe: so o ffmpeg.exe do build LGPL do BtbN.
 # Aborta com codigo != 0 se algum SHA-256 nao bater com o lock.
 # No macOS, use scripts/fetch-sidecars.sh.
+#
+# RODE ANTES de `cargo build`, `cargo test` ou `npm run tauri build`: o
+# tauri-build exige os sidecars de bundle.externalBin e, sem eles, falha com
+# "resource path `binaries/codex-...` doesn't exist". Detalhes e licencas em
+# scripts/README-sidecars.md.
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
@@ -20,6 +25,10 @@ New-Item -ItemType Directory -Force -Path $Bin, $Cache | Out-Null
 
 # Baixa $Url para $File (reaproveitando o cache) e confere o SHA-256.
 function Get-VerifiedFile([string]$Url, [string]$File, [string]$Sha256) {
+    if (-not $Url.StartsWith('https://')) {
+        Write-Error "URL sem HTTPS no lock: $Url" -ErrorAction Continue
+        exit 1
+    }
     if (-not (Test-Path -LiteralPath $File)) {
         Write-Host "Baixando $Url..."
         $part = "$File.part"

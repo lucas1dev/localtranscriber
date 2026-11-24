@@ -7,7 +7,8 @@
 #   - o ffmpeg empacotado decodifica os formatos aceitos pelo app (mp3, m4a,
 #     webm, ogg, flac, wav e mp4 com vídeo), com os mesmos argumentos de
 #     transcribe::ffmpeg_args. A mídia de teste é gerada com o ffmpeg do
-#     sistema (Homebrew); sem ele, essa parte é pulada.
+#     PATH (ex.: Homebrew) ou de HOST_FFMPEG=<caminho>; sem ele, a verificação
+#     falha. Para pular de propósito essa parte, use SKIP_DECODE=1.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -74,15 +75,13 @@ else
 fi
 
 # --- FFmpeg: decodificação dos formatos aceitos -----------------------------
-HOST_FFMPEG="${HOST_FFMPEG:-}"
-if [ -z "$HOST_FFMPEG" ]; then
-  for candidate in /opt/homebrew/bin/ffmpeg /usr/local/bin/ffmpeg; do
-    if [ -x "$candidate" ]; then HOST_FFMPEG="$candidate"; break; fi
-  done
-fi
+# (src-tauri/binaries não está no PATH, então `command -v` acha o do sistema.)
+HOST_FFMPEG="${HOST_FFMPEG:-$(command -v ffmpeg || true)}"
 
-if [ -z "$HOST_FFMPEG" ]; then
-  echo "aviso: ffmpeg do sistema não encontrado; pulando o teste de decodificação."
+if [ "${SKIP_DECODE:-}" = "1" ]; then
+  echo "AVISO: SKIP_DECODE=1 — o teste de decodificação NÃO foi executado; os formatos aceitos pelo app não foram verificados." >&2
+elif [ -z "$HOST_FFMPEG" ]; then
+  fail "ffmpeg do sistema não encontrado para gerar a mídia de teste (instale com 'brew install ffmpeg', defina HOST_FFMPEG=<caminho> ou pule com SKIP_DECODE=1)"
 else
   media="$(mktemp -d)"
   trap 'rm -rf "$media"' EXIT

@@ -19,7 +19,7 @@ sha256() {
 mkdir -p "$FIXTURES"
 if [ ! -f "$JFK" ]; then
   echo "Baixando jfk.wav..."
-  curl --fail -L -sS -o "$JFK.part" "$JFK_URL"
+  curl --proto '=https' --proto-redir '=https' --fail -L -sS -o "$JFK.part" "$JFK_URL"
   mv "$JFK.part" "$JFK"
 fi
 

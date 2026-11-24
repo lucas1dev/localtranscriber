@@ -20,7 +20,12 @@
       "url": "https://github.com/BtbN/FFmpeg-Builds/releases/download/autobuild-2026-10-31-12-59/ffmpeg-n9.0.2-39-g7adfbe40dc-win64-lgpl-9.0.zip",
       "sha256": "9d37c564e0d01c18cde184a079fa6ef04d7d2783ada41da81d04165cc8f1a650",
       "member": "bin/ffmpeg.exe",
-      "source_url": "https://github.com/FFmpeg/FFmpeg/tree/7adfbe40dc"
+      "variant": "win64-lgpl-9.0",
+      "build_release": "https://github.com/BtbN/FFmpeg-Builds/releases/tag/autobuild-2026-10-31-12-59",
+      "build_scripts_commit": "5031c6f1082414e53688d39e521849905071070d",
+      "build_scripts_url": "https://github.com/BtbN/FFmpeg-Builds/tree/5031c6f1082414e53688d39e521849905071070d",
+      "source_revision": "7adfbe40dcde598f93a6963d2f7b22cd75202ccc",
+      "source_url": "https://github.com/FFmpeg/FFmpeg/archive/7adfbe40dcde598f93a6963d2f7b22cd75202ccc.tar.gz"
     },
     "aarch64-apple-darwin": {
       "source_url": "https://ffmpeg.org/releases/ffmpeg-9.1.tar.xz",

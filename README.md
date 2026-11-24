@@ -47,6 +47,10 @@ Modelos alternativos:
 
 Abra `http://127.0.0.1:8765` no Safari ou Chrome. Pare com `Ctrl+C` no Terminal.
 
+## Desenvolvimento (app desktop, `src-tauri/`)
+
+Antes de `cargo build`, `cargo test` ou `npm run tauri build`, prepare os sidecars (FFmpeg LGPL e Codex): `scripts/fetch-sidecars.sh` no macOS ou `scripts/fetch-sidecars.ps1` no Windows. Sem eles o build falha com ``resource path `binaries/codex-...` doesn't exist``. Detalhes, versões e licenças em [`scripts/README-sidecars.md`](scripts/README-sidecars.md).
+
 ## Transcrição
 
 - Upload de áudio/vídeo e conversão via FFmpeg.

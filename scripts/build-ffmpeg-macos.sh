@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# Chamado por fetch-sidecars.sh, que deve rodar antes de cargo build/test ou
+# npm run tauri build (veja scripts/README-sidecars.md).
+#
 # Compila o FFmpeg LGPL mínimo (arm64, estático, sem bibliotecas externas) a
 # partir do tarball oficial fixado em scripts/sidecars.lock.json e o copia para
 # src-tauri/binaries/ffmpeg-aarch64-apple-darwin.
@@ -31,6 +34,13 @@ TARBALL="$CACHE/$(basename "$SOURCE_URL")"
 SRC="$CACHE/src"
 BUILT="$CACHE/ffmpeg"
 
+# O configure/make do FFmpeg não funcionam com espaço no caminho do build.
+if [[ "$CACHE" == *" "* ]]; then
+  echo "O caminho do build do FFmpeg não pode ter espaços: $CACHE" >&2
+  echo "Clone o repositório num caminho sem espaços." >&2
+  exit 1
+fi
+
 mkdir -p "$CACHE" "$(dirname "$DEST")"
 
 if [ -x "$BUILT" ]; then
@@ -38,7 +48,7 @@ if [ -x "$BUILT" ]; then
 else
   if [ ! -f "$TARBALL" ]; then
     echo "Baixando $SOURCE_URL..."
-    curl --fail -L -sS -o "$TARBALL.part" "$SOURCE_URL"
+    curl --proto '=https' --proto-redir '=https' --fail -L -sS -o "$TARBALL.part" "$SOURCE_URL"
     mv "$TARBALL.part" "$TARBALL"
   fi
   actual="$(shasum -a 256 "$TARBALL" | awk '{print $1}')"

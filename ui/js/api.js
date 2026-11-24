@@ -16,8 +16,9 @@ export const api = {
   importModel: (path) => invoke('import_model', { path }),
 
   transcribeFile: (path, model, language) => invoke('transcribe_file', { path, model, language }),
-  // data: array simples de números (bytes)
-  transcribeChunk: (data, mime, model, language) => invoke('transcribe_chunk', { data, mime, model, language }),
+  listAudioInputs: () => invoke('list_audio_inputs'),
+  startRecording: (source, micId, model, language) => invoke('start_recording', { source, micId, model, language }),
+  stopRecording: () => invoke('stop_recording'),
   cancelTranscription: () => invoke('cancel_transcription'),
 
   providersStatus: () => invoke('providers_status'),

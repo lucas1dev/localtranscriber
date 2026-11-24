@@ -45,3 +45,14 @@ test('saveText cancelado não grava nem dá erro', async () => {
   assert.equal(await saveText('transcricao.txt', 'Olá'), false);
   assert.deepEqual(calls.invoke, []);
 });
+
+test('toSrt etiqueta a fala quando há speaker', () => {
+  assert.equal(
+    toSrt([
+      { start: '00:00:00,000', end: '00:00:01,000', text: 'Oi.', speaker: 'reuniao' },
+      { start: '00:00:01,000', end: '00:00:02,000', text: 'Olá.', speaker: 'voce' },
+      { start: '00:00:02,000', end: '00:00:03,000', text: 'Sem.', speaker: null },
+    ]),
+    '1\n00:00:00,000 --> 00:00:01,000\nReunião: Oi.\n\n2\n00:00:01,000 --> 00:00:02,000\nVocê: Olá.\n\n3\n00:00:02,000 --> 00:00:03,000\nSem.',
+  );
+});

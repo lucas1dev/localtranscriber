@@ -1,6 +1,6 @@
 # Local Transcriber
 
-Aplicativo de desktop (macOS Apple Silicon e Windows x64) que transcreve áudio no seu próprio computador, usando Whisper (whisper.cpp), e gera resumos com a IA que você escolher. Você pode importar arquivos de áudio ou gravar pelo microfone, e exportar o resultado.
+Aplicativo de desktop (macOS Apple Silicon e Windows x64) que transcreve áudio no seu próprio computador, usando Whisper (whisper.cpp), e gera resumos com a IA que você escolher. Você pode importar arquivos de áudio ou gravar o microfone e o som do computador (reuniões, vídeos), e exportar o resultado.
 
 ## Baixar e instalar
 
@@ -21,10 +21,26 @@ xattr -dr com.apple.quarantine "/Applications/Local Transcriber.app"
 ## Primeiro uso
 
 1. Abra **Configurações → Transcrição** e baixe um modelo Whisper (os maiores são mais precisos e mais lentos).
-2. Volte para a tela inicial, importe um áudio ou grave pelo microfone e transcreva.
+2. Volte para a tela inicial, importe um áudio ou grave (microfone e/ou som do computador) e transcreva.
 3. Exporte a transcrição em TXT ou SRT, ou o resumo em `.md`: o app pergunta onde salvar o arquivo.
 
 A transcrição roda 100% no seu computador, sem internet depois que o modelo é baixado.
+
+## Gravar
+
+Na aba **Gravar** do passo ①, escolha a fonte:
+
+- **Microfone:** grava o microfone escolhido na lista (o padrão do sistema vem marcado; o botão ↻ recarrega a lista).
+- **Som do computador:** grava o que está tocando no computador (reunião, vídeo, aula).
+- **Microfone + som do computador:** grava os dois ao mesmo tempo. No texto, cada fala vem etiquetada: **Você** (microfone) e **Reunião** (som do computador). As etiquetas também aparecem nas legendas SRT e no texto enviado para o resumo.
+
+Enquanto grava, uma bolinha vermelha pulsa ao lado do cronômetro e uma barra de nível por fonte mostra se há som entrando. Barra parada em "Reunião" significa que nada está tocando no computador; parada em "Você", que o microfone não está captando.
+
+**Dica:** use fone de ouvido. Sem fone, o microfone capta a fala dos outros saindo pelo alto-falante e ela é gravada duas vezes.
+
+**macOS:** na primeira vez que gravar o som do computador, o macOS pede a permissão **Gravação de áudio do sistema**. Se você negar, ou quiser mudar depois, vá em **Ajustes do Sistema → Privacidade e Segurança**. Isso exige macOS 14.6 ou mais novo. No Windows não há pedido de permissão.
+
+**Fones Bluetooth:** quando o microfone do fone está em uso, o Bluetooth costuma passar para a qualidade de chamada e o som piora. Para uma qualidade melhor, grave com o microfone do computador e use o fone só para ouvir.
 
 ## Contas de IA para resumos
 

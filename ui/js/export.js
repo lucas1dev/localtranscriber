@@ -1,9 +1,10 @@
 // Exportação de transcrições e resumos.
 import { api } from './api.js';
+import { SPEAKER_LABEL } from './recorder.js';
 
 export function toSrt(segments) {
   return segments
-    .map((s, i) => `${i + 1}\n${s.start} --> ${s.end}\n${s.text}`)
+    .map((s, i) => `${i + 1}\n${s.start} --> ${s.end}\n${s.speaker && SPEAKER_LABEL[s.speaker] ? `${SPEAKER_LABEL[s.speaker]}: ` : ''}${s.text}`)
     .join('\n\n');
 }
 

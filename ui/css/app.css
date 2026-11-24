@@ -12,7 +12,6 @@
   --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
 }
 * { box-sizing: border-box; }
-[hidden] { display: none !important; }
 body {
   margin: 0; min-height: 100vh; color: var(--text);
   background: radial-gradient(ellipse at 50% -20%, #263328 0, transparent 42%), var(--bg);
@@ -70,7 +69,25 @@ button:disabled { opacity: 0.35; cursor: not-allowed; }
   display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 9px; font: 13px system-ui; cursor: pointer;
 }
 .drop-name { color: var(--accent); font: 12px var(--mono); overflow-wrap: anywhere; }
-.mic-time { font: 24px var(--mono); text-align: center; }
+.mic-time { font: 24px var(--mono); }
+.record-setup { display: grid; gap: 12px; font-size: 13px; }
+.source-row { display: flex; flex-wrap: wrap; gap: 8px 16px; align-items: center; }
+.field-label { color: var(--muted); font-size: 12px; }
+.radio { display: inline-flex; align-items: center; gap: 6px; cursor: pointer; }
+.mic-row { display: grid; grid-template-columns: auto 1fr auto; gap: 10px; align-items: center; color: var(--muted); font-size: 12px; }
+.hint { color: var(--muted); font-size: 12px; }
+.hint::before { content: 'ⓘ '; }
+.rec-status { display: flex; align-items: center; justify-content: center; gap: 10px; }
+.rec-dot { width: 12px; height: 12px; border-radius: 50%; background: #ff4d4d; animation: rec-pulse 1.2s ease-in-out infinite; }
+.rec-status.finishing .rec-dot { animation: none; opacity: 0.5; }
+@keyframes rec-pulse { 0%, 100% { opacity: 1; transform: scale(1); } 50% { opacity: 0.35; transform: scale(0.8); } }
+@media (prefers-reduced-motion: reduce) { .rec-dot { animation: none; } }
+.levels { display: grid; gap: 8px; }
+.level-row { display: grid; grid-template-columns: 70px 1fr; gap: 10px; align-items: center; font-size: 12px; color: var(--muted); }
+.level-track { height: 8px; background: #0c1014; border: 1px solid var(--line); border-radius: 4px; overflow: hidden; }
+.level-fill { height: 100%; width: 0; background: var(--accent); transition: width 90ms linear; }
+@media (prefers-reduced-motion: reduce) { .level-fill { transition: none; } }
+[hidden] { display: none !important; }
 .mic-live {
   min-height: 90px; padding: 12px; background: #0c1014; border: 1px solid var(--line); border-radius: 11px;
   font-size: 13px; line-height: 1.7; white-space: pre-wrap; overflow-wrap: anywhere;

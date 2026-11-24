@@ -58,6 +58,12 @@ const RATE_ADDRESS: AudioObjectPropertyAddress = AudioObjectPropertyAddress {
     mElement: kAudioObjectPropertyElementMain,
 };
 
+const FORMAT_ADDRESS: AudioObjectPropertyAddress = AudioObjectPropertyAddress {
+    mSelector: kAudioStreamPropertyVirtualFormat,
+    mScope: kAudioObjectPropertyScopeGlobal,
+    mElement: kAudioObjectPropertyElementMain,
+};
+
 const ALIVE_ADDRESS: AudioObjectPropertyAddress = AudioObjectPropertyAddress {
     mSelector: kAudioDevicePropertyDeviceIsAlive,
     mScope: kAudioObjectPropertyScopeGlobal,
@@ -70,8 +76,9 @@ const RESTART_ADDRESS: AudioObjectPropertyAddress = AudioObjectPropertyAddress {
     mElement: kAudioObjectPropertyElementMain,
 };
 
-/// Dados do IOProc. A taxa é atualizada por um listener quando o agregado muda
-/// de taxa (por exemplo, fone Bluetooth entrando em modo de chamada).
+/// Dados do IOProc. A taxa é atualizada por dois listeners: a taxa nominal do
+/// agregado e o formato virtual do stream de entrada (por exemplo, fone
+/// Bluetooth entrando em modo de chamada). Os canais vêm de cada buffer.
 struct IoCtx {
     sink: RawSink,
     /// `'static` de propósito: o listener pode rodar numa thread do Core Audio
@@ -81,13 +88,15 @@ struct IoCtx {
 }
 
 /// Tap global + agregado + IOProc. O drop para e desfaz tudo, na ordem:
-/// para o dispositivo, destrói o IOProc, remove os listeners e destrói o
-/// agregado e o tap.
+/// para o dispositivo, destrói o IOProc, remove os listeners (na ordem inversa
+/// em que entraram) e destrói o agregado e o tap.
 pub(super) struct SystemTap {
     tap_id: AudioObjectID,
     aggregate_id: AudioObjectID,
     proc_id: AudioDeviceIOProcID,
     rate: Option<&'static AtomicU32>,
+    /// Stream de entrada do agregado com o listener de formato, se ele entrou.
+    format_stream: Option<AudioObjectID>,
     /// Célula de falha compartilhada com a thread de conversão. `'static` pela
     /// mesma razão da taxa: um listener pode rodar logo depois de removido.
     fault: &'static AtomicU8,
@@ -109,6 +118,7 @@ impl SystemTap {
             aggregate_id: 0,
             proc_id: None,
             rate: None,
+            format_stream: None,
             fault,
             alive_listening: false,
             restart_listening: false,
@@ -193,6 +203,18 @@ impl SystemTap {
             )
         })?;
         tap.rate = Some(rate);
+        // Melhor esforço: sem ele, a taxa nominal acima ainda cobre a maioria dos casos.
+        let format_status = unsafe {
+            AudioObjectAddPropertyListener(
+                stream,
+                NonNull::from(&FORMAT_ADDRESS),
+                Some(format_listener),
+                (rate as *const AtomicU32).cast_mut().cast(),
+            )
+        };
+        if format_status == 0 {
+            tap.format_stream = Some(stream);
+        }
 
         check("acompanhar o dispositivo agregado", unsafe {
             AudioObjectAddPropertyListener(
@@ -244,6 +266,14 @@ impl Drop for SystemTap {
                     NonNull::from(&ALIVE_ADDRESS),
                     Some(alive_listener),
                     fault_client(self.fault),
+                );
+            }
+            if let (Some(stream), Some(rate)) = (self.format_stream, self.rate) {
+                let _ = AudioObjectRemovePropertyListener(
+                    stream,
+                    NonNull::from(&FORMAT_ADDRESS),
+                    Some(format_listener),
+                    (rate as *const AtomicU32).cast_mut().cast(),
                 );
             }
             if let Some(rate) = self.rate {
@@ -315,6 +345,34 @@ unsafe extern "C-unwind" fn rate_listener(
         }
     }
     0
+}
+
+/// Listener do formato virtual da entrada do agregado (o formato que o IOProc
+/// recebe): alguns fones mudam a taxa do stream sem mudar a nominal do agregado.
+unsafe extern "C-unwind" fn format_listener(
+    object: AudioObjectID,
+    _count: u32,
+    _addresses: NonNull<AudioObjectPropertyAddress>,
+    client: *mut c_void,
+) -> i32 {
+    let Some(rate) = (client as *const AtomicU32).as_ref() else {
+        return 0;
+    };
+    if let Ok(format) = property::<AudioStreamBasicDescription>(
+        object,
+        kAudioStreamPropertyVirtualFormat,
+        kAudioObjectPropertyScopeGlobal,
+    ) {
+        store_format_rate(rate, &format);
+    }
+    0
+}
+
+/// Guarda a taxa de um formato válido; ignora formatos sem taxa.
+fn store_format_rate(rate: &AtomicU32, format: &AudioStreamBasicDescription) {
+    if format.mSampleRate >= 1.0 {
+        rate.store(format.mSampleRate.round() as u32, Ordering::Relaxed);
+    }
 }
 
 /// Listener de "está vivo" do agregado: se morreu (ou não responde), marca a
@@ -566,6 +624,46 @@ mod tests {
             let status = unsafe { listener(0, 1, NonNull::from(&address), std::ptr::null_mut()) };
             assert_eq!(status, 0);
         }
+    }
+
+    fn asbd(rate: f64, channels: u32) -> AudioStreamBasicDescription {
+        AudioStreamBasicDescription {
+            mSampleRate: rate,
+            mFormatID: kAudioFormatLinearPCM,
+            mFormatFlags: kAudioFormatFlagIsFloat,
+            mBytesPerPacket: 4 * channels,
+            mFramesPerPacket: 1,
+            mBytesPerFrame: 4 * channels,
+            mChannelsPerFrame: channels,
+            mBitsPerChannel: 32,
+            mReserved: 0,
+        }
+    }
+
+    #[test]
+    fn stream_format_change_updates_rate() {
+        let rate = AtomicU32::new(48_000);
+        store_format_rate(&rate, &asbd(24_000.0, 1));
+        assert_eq!(rate.load(Ordering::Relaxed), 24_000);
+        store_format_rate(&rate, &asbd(44_100.4, 2));
+        assert_eq!(rate.load(Ordering::Relaxed), 44_100);
+        // Formato sem taxa: mantém a última boa.
+        store_format_rate(&rate, &asbd(0.0, 1));
+        assert_eq!(rate.load(Ordering::Relaxed), 44_100);
+    }
+
+    #[test]
+    fn format_listener_keeps_rate_when_stream_does_not_answer() {
+        // Objeto 0 (kAudioObjectUnknown) não tem formato: a taxa fica como estava.
+        let rate = AtomicU32::new(48_000);
+        let address = FORMAT_ADDRESS;
+        let status = unsafe {
+            format_listener(0, 1, NonNull::from(&address), (&rate as *const AtomicU32).cast_mut().cast())
+        };
+        assert_eq!(status, 0);
+        assert_eq!(rate.load(Ordering::Relaxed), 48_000);
+        let status = unsafe { format_listener(0, 1, NonNull::from(&address), std::ptr::null_mut()) };
+        assert_eq!(status, 0);
     }
 
     #[test]

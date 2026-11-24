@@ -14,8 +14,8 @@ export async function refreshModels(store) {
 const without = (map, key) => Object.fromEntries(Object.entries(map).filter(([k]) => k !== key));
 
 // Registra os listeners globais uma única vez, na partida do app.
-export function initDownloadEvents(store) {
-  const listen = (event, cb) => on(event, cb).catch((e) => console.error(event, e));
+export function initDownloadEvents(store, subscribe = on) {
+  const listen = (event, cb) => subscribe(event, cb).catch((e) => console.error(event, e));
 
   listen('model://progress', ({ id, done, total }) => {
     store.set({ downloads: { ...store.get().downloads, [id]: { done, total, error: null } } });
@@ -35,6 +35,15 @@ export function initDownloadEvents(store) {
     if (ok || isCancelled(error)) store.set({ pulls: without(pulls, name), ollamaTick: ollamaTick + 1 });
     else store.set({ pulls: { ...pulls, [name]: { status: '', done: 0, total: 0, error: errorMessage(error) } } });
   });
+}
+
+// Marca o download como em andamento ANTES de chamar o backend (um `done` rápido não é sobrescrito).
+// Devolve true se criou a entrada; false se já havia um download ativo.
+export function startEntry(store, key, name) {
+  const current = store.get()[key][name];
+  if (current && !current.error) return false;
+  store.set({ [key]: { ...store.get()[key], [name]: { status: '', done: 0, total: 0, error: null } } });
+  return true;
 }
 
 export function clearEntry(store, key, name) {

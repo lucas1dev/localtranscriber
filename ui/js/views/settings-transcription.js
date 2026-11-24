@@ -1,7 +1,7 @@
 // Configurações › Transcrição — modelos Whisper e idioma padrão.
 import { api, errorMessage } from '../api.js';
 import { h, showText } from '../dom.js';
-import { clearEntry, percentOf, refreshModels } from '../downloads.js';
+import { clearEntry, percentOf, refreshModels, startEntry } from '../downloads.js';
 import { formatBytes } from '../format.js';
 import { LANGUAGES } from './step-audio.js';
 
@@ -32,10 +32,18 @@ export function mountSettingsTranscription(root, store) {
   }
 
   const download = (id) => run(async () => {
-    await api.downloadModel(id);
-    store.set({ downloads: { ...store.get().downloads, [id]: { done: 0, total: 0, error: null } } });
+    const created = startEntry(store, 'downloads', id);
+    try {
+      await api.downloadModel(id);
+    } catch (e) {
+      if (created) clearEntry(store, 'downloads', id);
+      throw e;
+    }
   });
-  const cancel = (id) => run(() => api.cancelDownload(id));
+  const cancel = (id) => run(async () => {
+    clearEntry(store, 'downloads', id); // sai da linha mesmo que nenhum `done` chegue
+    await api.cancelDownload(id);
+  });
   const makeDefault = (id) => run(async () => {
     await api.setDefaultModel(id);
     await refreshModels(store);

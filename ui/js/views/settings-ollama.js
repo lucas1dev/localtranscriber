@@ -1,12 +1,12 @@
 // Configurações › Ollama — estado, modelos instalados e download de modelos.
 import { api, errorMessage } from '../api.js';
 import { h, showText } from '../dom.js';
-import { clearEntry, percentOf } from '../downloads.js';
+import { clearEntry, percentOf, startEntry } from '../downloads.js';
 
 const DOWNLOAD_URL = 'https://ollama.com/download';
 
 export function mountSettingsOllama(root, store) {
-  const ui = { running: false, models: [], loaded: false, confirming: null, wasVisible: false, tick: 0, pullKey: null };
+  const ui = { running: false, models: [], loaded: false, confirming: null, wasVisible: false, tick: 0, pullKey: null, listKey: null };
 
   const error = h('p', { class: 'form-error', role: 'alert', hidden: true });
   const status = h('p', { role: 'status' });
@@ -57,9 +57,13 @@ export function mountSettingsOllama(root, store) {
   const pull = () => run(async () => {
     const name = nameInput.value.trim();
     if (!name) return;
-    clearEntry(store, 'pulls', name);
-    await api.ollamaPull(name);
-    store.set({ pulls: { ...store.get().pulls, [name]: { status: '', done: 0, total: 0, error: null } } });
+    const created = startEntry(store, 'pulls', name);
+    try {
+      await api.ollamaPull(name);
+    } catch (e) {
+      if (created) clearEntry(store, 'pulls', name);
+      throw e;
+    }
     nameInput.value = '';
   });
 
@@ -105,7 +109,7 @@ export function mountSettingsOllama(root, store) {
         const text = h('span', { class: 'bar-text' });
         pullRows.set(name, { bar, text });
         return h('div', { class: 'row' }, h('div', { class: 'row-main' }, h('strong', { class: 'mono', text: name }),
-          h('button', { class: 'btn', type: 'button', text: 'Cancelar', onClick: () => run(() => api.cancelOllamaPull(name)) })),
+          h('button', { class: 'btn', type: 'button', text: 'Cancelar', onClick: () => run(async () => { clearEntry(store, 'pulls', name); await api.cancelOllamaPull(name); }) })),
         h('div', { class: 'progress' }, bar, text));
       }));
     }
@@ -128,9 +132,13 @@ export function mountSettingsOllama(root, store) {
     status.textContent = !ui.loaded ? 'Verificando…' : (ui.running ? 'Ollama rodando' : 'Ollama não encontrado');
     getLink.hidden = !ui.loaded || ui.running;
     nameInput.disabled = pullBtn.disabled = !ui.running;
-    list.replaceChildren(...(ui.models.length
-      ? ui.models.map(modelRow)
-      : [h('p', { class: 'muted', text: ui.running ? 'Nenhum modelo baixado.' : '—' })]));
+    const listKey = JSON.stringify([ui.running, ui.models, ui.confirming]);
+    if (listKey !== ui.listKey) {
+      ui.listKey = listKey;
+      list.replaceChildren(...(ui.models.length
+        ? ui.models.map(modelRow)
+        : [h('p', { class: 'muted', text: ui.running ? 'Nenhum modelo baixado.' : '—' })]));
+    }
     renderPulls(s.pulls);
   }
   store.subscribe(render);

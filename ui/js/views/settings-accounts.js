@@ -97,8 +97,9 @@ export function mountSettingsAccounts(root, store) {
 
   const saveKey = (id) => run(async () => {
     const input = ui.inputs.get(id);
-    await api.saveApiKey(id, input.value);
-    input.value = '';
+    const key = input.value;
+    input.value = ''; // a chave não fica no DOM, nem se o salvamento falhar
+    await api.saveApiKey(id, key);
     ui.editing.delete(id);
     await refresh();
   });
@@ -139,6 +140,7 @@ export function mountSettingsAccounts(root, store) {
     const visible = s.view === 'settings' && s.settingsSection === 'accounts';
     root.hidden = !visible;
     if (visible && !ui.wasVisible) { showText(error, ''); run(refresh); }
+    if (!visible) for (const input of ui.inputs.values()) input.value = '';
     ui.wasVisible = visible;
   });
   root.hidden = true;

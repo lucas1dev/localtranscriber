@@ -3,14 +3,20 @@
 //! Flags conferidas em `claude --help` (Claude Code 2.1.331):
 //! - `claude auth status` — JSON (padrão) com `loggedIn`, `authMethod`, `email`.
 //! - `claude -p --output-format text --no-session-persistence --system-prompt <SYSTEM>
-//!   --tools "" --strict-mcp-config [--model <modelo>]`, prompt pelo stdin.
+//!   --tools "" --strict-mcp-config --safe-mode [--model <modelo>]`, prompt pelo stdin.
 //!   `--tools ""` desliga todas as ferramentas embutidas; `--strict-mcp-config` sem
-//!   `--mcp-config` não carrega nenhum servidor MCP.
+//!   `--mcp-config` não carrega nenhum servidor MCP; `--safe-mode` desliga CLAUDE.md,
+//!   hooks, plugins e MCP da pessoa sem afetar o login. Num `claude` sem `--safe-mode`
+//!   (detectado uma vez pelo `--help`), usa `--setting-sources project`.
+//! - Roda num diretório temporário vazio, para não herdar o CLAUDE.md nem as
+//!   configurações de projeto do diretório do app. Não usa `--bare` (desliga o OAuth).
 //!
 //! Nunca roda `claude login` nem lê arquivos de credencial.
 
+use std::collections::HashMap;
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
+use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 
 use async_trait::async_trait;
@@ -25,6 +31,57 @@ const LOGIN_REQUIRED: &str =
     "Entre na sua conta no Claude Code (rode `claude` no Terminal) e tente de novo.";
 const STATUS_TIMEOUT: Duration = Duration::from_secs(30);
 const EXEC_TIMEOUT: Duration = Duration::from_secs(15 * 60);
+const HELP_TIMEOUT: Duration = Duration::from_secs(15);
+
+/// Argumentos de `claude -p`. `safe_mode`: o `claude` aceita `--safe-mode`.
+pub fn exec_args(system: &str, model: Option<&str>, safe_mode: bool) -> Vec<OsString> {
+    let isolation: &[&str] = if safe_mode {
+        &["--safe-mode"]
+    } else {
+        &["--setting-sources", "project"]
+    };
+    let mut args: Vec<OsString> = [
+        "-p",
+        "--output-format",
+        "text",
+        "--no-session-persistence",
+        "--system-prompt",
+        system,
+        // `--tools` aceita vários valores: o próximo argumento precisa ser uma opção.
+        "--tools",
+        "",
+        "--strict-mcp-config",
+    ]
+    .iter()
+    .chain(isolation)
+    .map(OsString::from)
+    .collect();
+    if let Some(model) = model {
+        args.push("--model".into());
+        args.push(model.into());
+    }
+    args
+}
+
+/// Se o `claude` em `bin` aceita `--safe-mode`, lido do `--help` na primeira vez e
+/// guardado por caminho do executável.
+pub async fn supports_safe_mode(bin: &Path) -> bool {
+    static CACHE: OnceLock<Mutex<HashMap<PathBuf, bool>>> = OnceLock::new();
+    let cache = CACHE.get_or_init(Mutex::default);
+    if let Some(&known) = cache.lock().unwrap_or_else(|e| e.into_inner()).get(bin) {
+        return known;
+    }
+    let args = [OsString::from("--help")];
+    let supported = match cli::run("Claude Code", bin, &args, &[], None, HELP_TIMEOUT).await {
+        Ok(out) => out.code == 0 && out.stdout.contains("--safe-mode"),
+        Err(_) => false,
+    };
+    cache
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .insert(bin.to_path_buf(), supported);
+    supported
+}
 
 #[derive(Debug, Clone)]
 pub struct ClaudeCode {
@@ -79,30 +136,16 @@ pub struct ClaudeCodeLlm {
 #[async_trait]
 impl Llm for ClaudeCodeLlm {
     async fn complete(&self, system: &str, user: &str) -> Result<String, AppError> {
-        let mut args: Vec<OsString> = [
-            "-p",
-            "--output-format",
-            "text",
-            "--no-session-persistence",
-            "--system-prompt",
-            system,
-            // `--tools` aceita vários valores: o próximo argumento precisa ser uma opção.
-            "--tools",
-            "",
-            "--strict-mcp-config",
-        ]
-        .into_iter()
-        .map(OsString::from)
-        .collect();
-        if let Some(model) = &self.model {
-            args.push("--model".into());
-            args.push(model.into());
-        }
-        let out = cli::run(
+        let safe_mode = supports_safe_mode(&self.bin).await;
+        let args = exec_args(system, self.model.as_deref(), safe_mode);
+        // Diretório vazio, apagado quando `workdir` sai de escopo (depois do processo terminar).
+        let workdir = tempfile::tempdir()?;
+        let out = cli::run_in(
             "Claude Code",
             &self.bin,
             &args,
             &[],
+            Some(workdir.path()),
             Some(user),
             EXEC_TIMEOUT,
         )
@@ -152,10 +195,83 @@ mod tests {
         assert!(locate_in(&[local_bin], Some("".into())).is_none());
     }
 
+    fn strings(args: &[OsString]) -> Vec<&str> {
+        args.iter().map(|a| a.to_str().unwrap()).collect()
+    }
+
+    #[test]
+    fn exec_args_with_safe_mode() {
+        assert_eq!(
+            strings(&exec_args("SISTEMA", None, true)),
+            [
+                "-p", "--output-format", "text", "--no-session-persistence",
+                "--system-prompt", "SISTEMA", "--tools", "", "--strict-mcp-config",
+                "--safe-mode",
+            ]
+        );
+        assert_eq!(
+            strings(&exec_args("S", Some("sonnet"), true))[9..],
+            ["--safe-mode", "--model", "sonnet"]
+        );
+    }
+
+    #[test]
+    fn exec_args_without_safe_mode_limits_setting_sources() {
+        let args = exec_args("S", Some("opus"), false);
+        let args = strings(&args);
+        assert_eq!(
+            args[6..],
+            ["--tools", "", "--strict-mcp-config", "--setting-sources", "project", "--model", "opus"]
+        );
+        assert!(!args.contains(&"--safe-mode") && !args.contains(&"--bare"));
+    }
+
     #[cfg(unix)]
     mod unix {
         use super::*;
         use crate::providers::cli::tests::script;
+
+        #[tokio::test]
+        async fn safe_mode_detected_once_from_help() {
+            let tmp = tempfile::tempdir().unwrap();
+            let count = tmp.path().join("count");
+            let with = script(
+                tmp.path(),
+                "com",
+                &format!(
+                    r#"echo x >> "{}"; echo '  --safe-mode   Start with all customizations disabled'"#,
+                    count.display()
+                ),
+            );
+            assert!(supports_safe_mode(&with).await);
+            assert!(supports_safe_mode(&with).await);
+            assert_eq!(std::fs::read_to_string(&count).unwrap(), "x\n");
+            let without = script(tmp.path(), "sem", "echo '  --setting-sources <sources>'");
+            assert!(!supports_safe_mode(&without).await);
+            let broken = script(tmp.path(), "quebrado", "exit 1");
+            assert!(!supports_safe_mode(&broken).await);
+        }
+
+        #[tokio::test]
+        async fn complete_runs_in_empty_temp_dir() {
+            let tmp = tempfile::tempdir().unwrap();
+            let log = tmp.path().join("log.txt");
+            let bin = script(
+                tmp.path(),
+                "claude",
+                &format!(
+                    r#"[ "$1" = "--help" ] && exit 0; pwd -P > "{log}"; ls -A | wc -l | tr -d ' ' >> "{log}"; cat"#,
+                    log = log.display()
+                ),
+            );
+            ClaudeCodeLlm { bin, model: None }.complete("S", "U").await.unwrap();
+            let log = std::fs::read_to_string(&log).unwrap();
+            let (dir, entries) = log.trim().split_once('\n').unwrap();
+            let here = std::env::current_dir().unwrap().canonicalize().unwrap();
+            assert_ne!(Path::new(dir), here.as_path());
+            assert_eq!(entries, "0", "o diretório de trabalho deveria estar vazio");
+            assert!(!Path::new(dir).exists(), "o diretório temporário deveria ser apagado");
+        }
 
         #[tokio::test]
         async fn status_reads_logged_in_json() {
@@ -199,7 +315,7 @@ mod tests {
                 tmp.path(),
                 "claude",
                 &format!(
-                    r#"printf '%s\n' "$@" > "{}"; printf '  resposta: '; cat"#,
+                    r#"[ "$1" = "--help" ] && echo '  --safe-mode' && exit 0; printf '%s\n' "$@" > "{}"; printf '  resposta: '; cat"#,
                     args_file.display()
                 ),
             );
@@ -214,7 +330,7 @@ mod tests {
             assert_eq!(
                 args,
                 "-p\n--output-format\ntext\n--no-session-persistence\n--system-prompt\nSISTEMA\n\
-                 --tools\n\n--strict-mcp-config\n"
+                 --tools\n\n--strict-mcp-config\n--safe-mode\n"
             );
 
             let llm = ClaudeCodeLlm {
@@ -224,7 +340,7 @@ mod tests {
             llm.complete("S", "U").await.unwrap();
             let args = std::fs::read_to_string(&args_file).unwrap();
             assert!(
-                args.ends_with("--strict-mcp-config\n--model\nsonnet\n"),
+                args.ends_with("--strict-mcp-config\n--safe-mode\n--model\nsonnet\n"),
                 "{args}"
             );
         }

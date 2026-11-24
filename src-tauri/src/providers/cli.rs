@@ -28,7 +28,23 @@ pub async fn run(
     stdin: Option<&str>,
     timeout: Duration,
 ) -> Result<CliOutput, AppError> {
+    run_in(label, program, args, envs, None, stdin, timeout).await
+}
+
+/// Como [`run`], com o diretório de trabalho `cwd` (o do app quando `None`).
+pub async fn run_in(
+    label: &str,
+    program: &Path,
+    args: &[OsString],
+    envs: &[(OsString, OsString)],
+    cwd: Option<&Path>,
+    stdin: Option<&str>,
+    timeout: Duration,
+) -> Result<CliOutput, AppError> {
     let mut cmd = Command::new(program);
+    if let Some(dir) = cwd {
+        cmd.current_dir(dir);
+    }
     cmd.args(args)
         .envs(envs.iter().map(|(k, v)| (k, v)))
         .stdin(if stdin.is_some() {

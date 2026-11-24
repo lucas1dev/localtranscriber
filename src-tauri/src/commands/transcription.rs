@@ -1,7 +1,6 @@
-use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use tauri::{AppHandle, Emitter, State};
 
@@ -10,8 +9,45 @@ use crate::models;
 use crate::state::AppState;
 use crate::transcribe::{decode_to_pcm, join_text, Transcript};
 
+/// Espaço único de tarefa pesada (arquivo ou gravação): guarda o cancelamento da vez.
+pub type CancelSlot = Arc<Mutex<Option<Arc<AtomicBool>>>>;
+
+/// Ocupa o espaço enquanto viver; solto (inclusive em pânico), libera.
+pub struct SlotGuard {
+    slot: CancelSlot,
+    cancel: Arc<AtomicBool>,
+}
+
+impl SlotGuard {
+    pub fn cancel(&self) -> Arc<AtomicBool> {
+        Arc::clone(&self.cancel)
+    }
+}
+
+/// Ocupa o espaço; erro de exclusividade se já houver transcrição ou gravação.
+pub fn claim_slot(slot: &CancelSlot) -> Result<SlotGuard, AppError> {
+    let mut current = slot.lock().unwrap_or_else(|e| e.into_inner());
+    if current.is_some() {
+        return Err(AppError::User(
+            "Já existe uma transcrição em andamento.".into(),
+        ));
+    }
+    let cancel = Arc::new(AtomicBool::new(false));
+    *current = Some(Arc::clone(&cancel));
+    Ok(SlotGuard {
+        slot: Arc::clone(slot),
+        cancel,
+    })
+}
+
+impl Drop for SlotGuard {
+    fn drop(&mut self) {
+        *self.slot.lock().unwrap_or_else(|e| e.into_inner()) = None;
+    }
+}
+
 /// Valida modelo e idioma e devolve o caminho do arquivo do modelo.
-fn validate_request(
+pub fn validate_request(
     models_dir: &Path,
     model: &str,
     language: &str,
@@ -66,19 +102,8 @@ pub async fn transcribe_file(
     language: String,
 ) -> Result<Transcript, AppError> {
     let state = Arc::clone(&state);
-    let cancel = Arc::new(AtomicBool::new(false));
-    {
-        let mut slot = state
-            .transcription_cancel
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
-        if slot.is_some() {
-            return Err(AppError::User(
-                "Já existe uma transcrição em andamento.".into(),
-            ));
-        }
-        *slot = Some(Arc::clone(&cancel));
-    }
+    let slot = claim_slot(&state.transcription_cancel)?;
+    let cancel = slot.cancel();
 
     let input = PathBuf::from(&path);
     let source_name = input
@@ -100,41 +125,9 @@ pub async fn transcribe_file(
         )
     })
     .await;
-
-    *state
-        .transcription_cancel
-        .lock()
-        .unwrap_or_else(|e| e.into_inner()) = None;
+    drop(slot);
 
     result.map_err(|e| AppError::Internal(format!("Falha na tarefa de transcrição: {e}")))?
-}
-
-#[tauri::command]
-pub async fn transcribe_chunk(
-    state: State<'_, Arc<AppState>>,
-    data: Vec<u8>,
-    mime: String,
-    model: String,
-    language: String,
-) -> Result<Transcript, AppError> {
-    let state = Arc::clone(&state);
-    tokio::task::spawn_blocking(move || {
-        let suffix = if mime.contains("mp4") { ".m4a" } else { ".webm" };
-        let mut file = tempfile::Builder::new().suffix(suffix).tempfile()?;
-        file.write_all(&data)?;
-        file.flush()?;
-        run_transcription(
-            &state,
-            file.path(),
-            &model,
-            &language,
-            "Microfone".into(),
-            Arc::new(AtomicBool::new(false)),
-            Box::new(|_| {}),
-        )
-    })
-    .await
-    .map_err(|e| AppError::Internal(format!("Falha na tarefa de transcrição: {e}")))?
 }
 
 #[tauri::command]

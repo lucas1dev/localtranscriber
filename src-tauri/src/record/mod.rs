@@ -1,12 +1,12 @@
-// Gravação: lógica pura (reamostragem, relógio, etiquetas) e dispositivos cpal.
-// Task 4 liga tudo à sessão; até lá, parte do código só é usada nos testes.
-#![allow(dead_code)]
+// Gravação: lógica pura (reamostragem, relógio, etiquetas), dispositivos e a
+// sessão que liga tudo.
 
 pub mod devices;
 #[cfg(target_os = "macos")]
 mod mac_tap;
 pub mod merge;
 pub mod resample;
+pub mod session;
 pub mod track;
 
 /// Duração de cada bloco enviado ao transcritor.

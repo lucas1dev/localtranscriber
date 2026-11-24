@@ -28,7 +28,7 @@ const WORKER_TICK: Duration = Duration::from_millis(50);
 /// Espera entre tentativas quando o canal de saída está cheio.
 const DELIVER_RETRY: Duration = Duration::from_millis(5);
 
-const MIC_GONE: &str = "O microfone foi desconectado.";
+pub(super) const MIC_GONE: &str = "O microfone foi desconectado.";
 const OUTPUT_GONE: &str = "A saída de som foi desconectada.";
 pub(super) const SYSTEM_PERMISSION: &str = "Permita a gravação do som do computador em Ajustes do Sistema → Privacidade e Segurança → Gravação de áudio do sistema e tente de novo.";
 const MIC_PERMISSION: &str = "Permita a gravação do microfone em Ajustes do Sistema → Privacidade e Segurança → Microfone e tente de novo.";
@@ -81,8 +81,9 @@ impl RawSink {
 
 enum Backend {
     Cpal(cpal::Stream),
+    // Só fica guardado para o drop parar o tap.
     #[cfg(target_os = "macos")]
-    MacTap(super::mac_tap::SystemTap),
+    MacTap(#[allow(dead_code)] super::mac_tap::SystemTap),
 }
 
 /// Uma captura aberta. O drop para a captura, esvazia a conversão e encerra a thread.

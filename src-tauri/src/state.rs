@@ -1,12 +1,13 @@
 use std::collections::HashMap;
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use tokio_util::sync::CancellationToken;
 
+use crate::commands::recording::RecordingHandle;
+use crate::commands::transcription::CancelSlot;
 use crate::credentials::{KeyringStore, SecretStore};
 use crate::paths::{find_executable, AppPaths};
 use crate::providers::Endpoints;
@@ -28,7 +29,8 @@ pub struct AppState {
     /// para a CDN) e desiste se o servidor parar de mandar dados.
     pub download_http: reqwest::Client,
     pub sidecars: Sidecars,
-    pub transcription_cancel: Mutex<Option<Arc<AtomicBool>>>,
+    pub transcription_cancel: CancelSlot,
+    pub recording: Mutex<Option<RecordingHandle>>,
     pub downloads: Mutex<HashMap<String, CancellationToken>>,
     pub ollama_pulls: Mutex<HashMap<String, CancellationToken>>,
     pub secrets: Arc<dyn SecretStore>,
@@ -104,7 +106,8 @@ impl AppState {
             http: provider_client(),
             download_http: download_client(DOWNLOAD_READ_TIMEOUT),
             sidecars: Sidecars::resolve(),
-            transcription_cancel: Mutex::new(None),
+            transcription_cancel: CancelSlot::default(),
+            recording: Mutex::new(None),
             downloads: Mutex::new(HashMap::new()),
             ollama_pulls: Mutex::new(HashMap::new()),
             secrets: Arc::new(KeyringStore),

@@ -28,8 +28,10 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             commands::transcription::transcribe_file,
-            commands::transcription::transcribe_chunk,
             commands::transcription::cancel_transcription,
+            commands::recording::list_audio_inputs,
+            commands::recording::start_recording,
+            commands::recording::stop_recording,
             commands::app::get_status,
             commands::app::get_settings,
             commands::app::set_settings,

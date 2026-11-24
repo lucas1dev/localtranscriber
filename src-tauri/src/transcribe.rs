@@ -151,6 +151,11 @@ impl Engine {
         }
     }
 
+    /// Descarta o modelo carregado em cache (ex.: antes de apagar o arquivo).
+    pub fn evict(&self) {
+        *self.cached.lock().unwrap_or_else(|e| e.into_inner()) = None;
+    }
+
     pub fn transcribe(
         &self,
         model_path: &Path,
@@ -237,6 +242,13 @@ impl Engine {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn evict_on_empty_engine_is_noop() {
+        let e = Engine::new();
+        e.evict();
+        assert!(e.cached.lock().unwrap().is_none());
+    }
 
     fn seg(text: &str) -> Segment {
         Segment {

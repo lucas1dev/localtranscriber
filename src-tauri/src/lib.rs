@@ -1,18 +1,11 @@
 mod commands;
-#[allow(dead_code)]
 mod credentials;
 pub mod error;
-#[allow(dead_code)]
 mod models;
-#[allow(dead_code)]
 mod paths;
-#[allow(dead_code)]
 pub mod providers;
-#[allow(dead_code)]
 pub mod summarize;
-#[allow(dead_code)]
 mod settings;
-#[allow(dead_code)]
 mod state;
 pub mod transcribe;
 
@@ -34,6 +27,27 @@ pub fn run() {
             commands::transcription::transcribe_file,
             commands::transcription::transcribe_chunk,
             commands::transcription::cancel_transcription,
+            commands::app::get_status,
+            commands::app::get_settings,
+            commands::app::set_settings,
+            commands::app::open_data_dir,
+            commands::models::list_models,
+            commands::models::download_model,
+            commands::models::cancel_download,
+            commands::models::delete_model,
+            commands::models::set_default_model,
+            commands::models::import_model,
+            commands::providers::providers_status,
+            commands::providers::save_api_key,
+            commands::providers::delete_api_key,
+            commands::providers::codex_login,
+            commands::providers::codex_logout,
+            commands::providers::ollama_models,
+            commands::providers::ollama_pull,
+            commands::providers::cancel_ollama_pull,
+            commands::providers::ollama_delete,
+            commands::summary::summarize,
+            commands::summary::compare,
         ])
         .run(tauri::generate_context!())
         .expect("erro ao executar o Local Transcriber");

@@ -76,6 +76,7 @@ pub fn normalize_key(key: &str) -> Result<String, AppError> {
     }
 }
 
+#[cfg(test)]
 pub fn validate_key(key: &str) -> Result<(), AppError> {
     normalize_key(key).map(|_| ())
 }

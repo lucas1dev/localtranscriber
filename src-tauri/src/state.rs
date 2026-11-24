@@ -6,7 +6,9 @@ use std::sync::{Arc, Mutex};
 
 use tokio_util::sync::CancellationToken;
 
+use crate::credentials::{KeyringStore, SecretStore};
 use crate::paths::{find_executable, AppPaths};
+use crate::providers::Endpoints;
 use crate::settings::Settings;
 use crate::transcribe::Engine;
 
@@ -23,6 +25,9 @@ pub struct AppState {
     pub sidecars: Sidecars,
     pub transcription_cancel: Mutex<Option<Arc<AtomicBool>>>,
     pub downloads: Mutex<HashMap<String, CancellationToken>>,
+    pub ollama_pulls: Mutex<HashMap<String, CancellationToken>>,
+    pub secrets: Arc<dyn SecretStore>,
+    pub endpoints: Endpoints,
 }
 
 /// Procura `name` ao lado do executável do app; se não existir, cai para
@@ -75,6 +80,9 @@ impl AppState {
             sidecars: Sidecars::resolve(),
             transcription_cancel: Mutex::new(None),
             downloads: Mutex::new(HashMap::new()),
+            ollama_pulls: Mutex::new(HashMap::new()),
+            secrets: Arc::new(KeyringStore),
+            endpoints: Endpoints::default(),
         }
     }
 }

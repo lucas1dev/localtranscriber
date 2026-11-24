@@ -1,7 +1,7 @@
 {
   "name": "local-transcriber",
-  "version": "1.0.0",
-  "description": "Aplicação local para transcrição com Whisper.cpp e resumo multi-provedor (OpenAI, Anthropic, Gemini e Ollama).",
+  "version": "0.1.0",
+  "description": "Aplicativo de desktop (macOS e Windows) que transcreve áudio localmente com Whisper e gera resumos com a IA que você escolher.",
   "directories": {
     "doc": "docs"
   },
@@ -15,7 +15,7 @@
   },
   "keywords": [],
   "author": "",
-  "license": "ISC",
+  "license": "MIT",
   "type": "module",
   "bugs": {
     "url": "https://github.com/lucas1dev/localtranscriber/issues"

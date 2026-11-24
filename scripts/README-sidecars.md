@@ -23,13 +23,20 @@ Rode **antes** de `cargo build`, `cargo test` ou `npm run tauri build` (o
   para gerar mídia de teste; para pular essa parte de propósito, `SKIP_DECODE=1`.
 - Windows: `powershell -ExecutionPolicy Bypass -File scripts\fetch-sidecars.ps1` e depois
   `powershell -ExecutionPolicy Bypass -File scripts\verify-sidecars.ps1` (versões do lock;
-  falha se o `ffmpeg.exe -version` mostrar `--enable-gpl`, `--enable-nonfree` ou `--enable-version3`).
+  falha se o `ffmpeg.exe -version` mostrar `--enable-gpl` ou `--enable-nonfree`).
 
-## FFmpeg — licença LGPL 2.1 ou posterior
+## FFmpeg — licença LGPL
 
 Nenhum dos binários é configurado com `--enable-gpl` ou `--enable-nonfree`.
+A licença de cada alvo fica em `ffmpeg.<triple>.license` no lock:
 
-### macOS (aarch64-apple-darwin) — FFmpeg 9.1
+- macOS: **LGPL 2.1 ou posterior** (`LGPL-2.1-or-later`; sem `--enable-version3`).
+- Windows: **LGPL 3.0 ou posterior** (`LGPL-3.0-or-later`). O build `win64-lgpl` do
+  BtbN sempre usa `--enable-version3` (`variants/defaults-lgpl.sh`), necessário para
+  bibliotecas Apache-2.0 como a opencore-amr. O FFmpeg roda como executável separado,
+  então a LGPL v3 não impõe nada ao código do app além de distribuir a fonte do FFmpeg.
+
+### macOS (aarch64-apple-darwin) — FFmpeg 9.1 (LGPL-2.1-or-later)
 
 - Código-fonte: <https://ffmpeg.org/releases/ffmpeg-9.1.tar.xz>
   (SHA-256 `1a4d394ae63d190a526cd052eb4415c156b5c5e2df37efab41a7de0b8fde2433`).
@@ -53,7 +60,7 @@ Nenhum dos binários é configurado com `--enable-gpl` ou `--enable-nonfree`.
 Para reproduzir: `scripts/build-ffmpeg-macos.sh` (baixa o tarball, confere o
 SHA-256, configura e compila).
 
-### Windows (x86_64-pc-windows-msvc) — FFmpeg n9.0.2-39-g7adfbe40dc
+### Windows (x86_64-pc-windows-msvc) — FFmpeg n9.0.2-39-g7adfbe40dc (LGPL-3.0-or-later)
 
 - Binário: build **win64-lgpl-9.0** (estático) do projeto
   [BtbN/FFmpeg-Builds](https://github.com/BtbN/FFmpeg-Builds), release

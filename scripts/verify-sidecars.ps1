@@ -1,8 +1,9 @@
 # (Arquivo so em ASCII: o Windows PowerShell 5.1 le .ps1 sem BOM como ANSI.)
 # Confere os sidecars do Windows em src-tauri\binaries:
 #   - ffmpeg e codex presentes;
-#   - ffmpeg na versao do lock e sem --enable-gpl, --enable-nonfree ou
-#     --enable-version3 na linha "configuration:" do `ffmpeg -version`;
+#   - ffmpeg na versao do lock e sem --enable-gpl ou --enable-nonfree na linha
+#     "configuration:" do `ffmpeg -version`. O --enable-version3 e esperado: o
+#     build win64-lgpl do BtbN e LGPL v3 (veja ffmpeg.<triple>.license no lock);
 #   - codex --version igual a versao do lock.
 # Rode depois de scripts\fetch-sidecars.ps1. Sai com codigo != 0 se algo falhar.
 # No macOS, use scripts/verify-sidecars.sh.
@@ -51,10 +52,10 @@ if ($configuration.Count -ne 1) {
     Fail "ffmpeg -version sem a linha 'configuration:'"
 }
 else {
-    $forbidden = @('--enable-gpl', '--enable-nonfree', '--enable-version3') |
+    $forbidden = @('--enable-gpl', '--enable-nonfree') |
         Where-Object { $configuration[0].Contains($_) }
     if ($forbidden) { Fail "ffmpeg foi configurado com $($forbidden -join ', ')" }
-    else { Ok 'ffmpeg sem --enable-gpl, --enable-nonfree ou --enable-version3' }
+    else { Ok 'ffmpeg sem --enable-gpl ou --enable-nonfree' }
 }
 
 # --- Codex: versao ------------------------------------------------------------

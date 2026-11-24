@@ -1,7 +1,7 @@
 // Passo ② — ler e editar a transcrição, copiar/exportar e seguir para o resumo.
 import { errorMessage } from '../api.js';
 import { h } from '../dom.js';
-import { downloadText, toSrt } from '../export.js';
+import { saveText, toSrt } from '../export.js';
 import { goTo } from '../flow.js';
 
 export function mountStepTranscript(root, store) {
@@ -25,8 +25,8 @@ export function mountStepTranscript(root, store) {
   const segments = h('details', { class: 'segments-box' }, segTitle, segList);
 
   const copyBtn = h('button', { class: 'btn', type: 'button', text: 'Copiar', onClick: onCopy });
-  const txtBtn = h('button', { class: 'btn', type: 'button', text: 'TXT', onClick: () => downloadText('transcricao.txt', store.get().transcript.text) });
-  const srtBtn = h('button', { class: 'btn', type: 'button', text: 'SRT', onClick: () => downloadText('transcricao.srt', toSrt(store.get().transcript.segments)) });
+  const txtBtn = h('button', { class: 'btn', type: 'button', text: 'TXT', onClick: () => exportText('transcricao.txt', store.get().transcript.text) });
+  const srtBtn = h('button', { class: 'btn', type: 'button', text: 'SRT', onClick: () => exportText('transcricao.srt', toSrt(store.get().transcript.segments)) });
   const back = h('button', { class: 'btn', type: 'button', text: '← Voltar', onClick: () => store.set(goTo(store.get(), 1)) });
   const next = h('button', {
     class: 'btn primary', type: 'button', text: 'Resumir →',
@@ -39,6 +39,14 @@ export function mountStepTranscript(root, store) {
   const nav = h('div', { class: 'actions spread' }, back, next);
 
   root.append(meta, area, segments, tools, nav);
+
+  async function exportText(name, contents) {
+    try {
+      await saveText(name, contents);
+    } catch (e) {
+      store.set({ error: errorMessage(e) });
+    }
+  }
 
   async function onCopy() {
     try {

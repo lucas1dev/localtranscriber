@@ -1,7 +1,7 @@
 // Passo ③ — gerar um resumo com um provedor ou comparar de 2 a 4 provedores.
 import { api, errorMessage } from '../api.js';
 import { h } from '../dom.js';
-import { downloadText } from '../export.js';
+import { saveText } from '../export.js';
 import { failJob, goTo, openSettings, startJob } from '../flow.js';
 import { renderMarkdown } from '../markdown.js';
 import { configuredProviders, initialProvider, usableProviders } from '../providers.js';
@@ -170,7 +170,7 @@ export function mountStepSummary(root, store) {
         setTimeout(() => { copy.textContent = 'Copiar'; }, 1400);
       });
       card.append(h('div', { class: 'actions' }, copy,
-        h('button', { class: 'btn', type: 'button', text: 'Salvar .md', onClick: () => downloadText(`resumo-${item.provider}.md`, item.summary) })));
+        h('button', { class: 'btn', type: 'button', text: 'Salvar .md', onClick: () => saveText(`resumo-${item.provider}.md`, item.summary).catch((e) => store.set({ error: errorMessage(e) })) })));
     }
     return card;
   }

@@ -31,6 +31,7 @@ pub fn run() {
             commands::app::get_settings,
             commands::app::set_settings,
             commands::app::open_data_dir,
+            commands::app::save_text_file,
             commands::models::list_models,
             commands::models::download_model,
             commands::models::cancel_download,

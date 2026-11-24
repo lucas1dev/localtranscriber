@@ -6,6 +6,7 @@ export const api = {
   getSettings: () => invoke('get_settings'),
   setSettings: (settings) => invoke('set_settings', { settings }),
   openDataDir: () => invoke('open_data_dir'),
+  saveTextFile: (path, contents) => invoke('save_text_file', { path, contents }),
 
   listModels: () => invoke('list_models'),
   downloadModel: (id) => invoke('download_model', { id }),
@@ -39,6 +40,8 @@ export const api = {
     directory: false,
     filters: [{ name: 'Áudio e vídeo', extensions: ['mp3', 'wav', 'm4a', 'mp4', 'mov', 'webm', 'ogg', 'flac', 'aac'] }],
   }),
+  // Diálogo "Salvar como"; devolve o caminho escolhido ou null se cancelado.
+  pickSavePath: (defaultPath, filters) => window.__TAURI__.dialog.save({ defaultPath, filters }),
   pickModelFile: () => window.__TAURI__.dialog.open({
     multiple: false,
     directory: false,

@@ -92,9 +92,36 @@ pub fn open_data_dir(app: AppHandle, state: State<'_, Arc<AppState>>) -> Result<
         .map_err(|e| AppError::Internal(format!("Não foi possível abrir a pasta: {e}")))
 }
 
+/// Grava `contents` em `path` (escolhido pela pessoa no diálogo "Salvar"), substituindo o arquivo.
+#[tauri::command]
+pub async fn save_text_file(path: String, contents: String) -> Result<(), AppError> {
+    tokio::fs::write(&path, contents)
+        .await
+        .map_err(|e| AppError::User(format!("Não foi possível salvar o arquivo: {e}")))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn save_text_file_writes_and_overwrites() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("Reunião ação.txt");
+        std::fs::write(&path, "antigo conteúdo mais longo").unwrap();
+        save_text_file(path.display().to_string(), "Olá\nmundo".into()).await.unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "Olá\nmundo");
+    }
+
+    #[tokio::test]
+    async fn save_text_file_reports_user_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("nao-existe").join("x.txt");
+        match save_text_file(path.display().to_string(), "x".into()).await {
+            Err(AppError::User(m)) => assert!(m.starts_with("Não foi possível salvar o arquivo: "), "{m}"),
+            other => panic!("{other:?}"),
+        }
+    }
 
     #[tokio::test]
     async fn missing_tool_gives_question_mark() {

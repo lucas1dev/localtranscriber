@@ -6,6 +6,8 @@ import { createStore } from './store.js';
 import { mountErrorBanner } from './views/error-banner.js';
 import { mountHeader } from './views/header.js';
 import { mountStepAudio } from './views/step-audio.js';
+import { mountStepSummary } from './views/step-summary.js';
+import { mountStepTranscript } from './views/step-transcript.js';
 
 const store = createStore({ ...initialState, settings: null, models: undefined });
 
@@ -14,16 +16,18 @@ mountErrorBanner(document.getElementById('banner'), store);
 
 const main = document.getElementById('main');
 const audio = h('section', { class: 'step' });
-const later = h('section', { class: 'step', hidden: true }, h('p', { class: 'muted', text: 'Passo em construção.' }));
+const transcript = h('section', { class: 'step', hidden: true });
+const summary = h('section', { class: 'step', hidden: true });
 const settings = h('section', { class: 'step', hidden: true },
   h('p', { text: 'Configurações (em construção)' }),
   h('button', { class: 'btn', type: 'button', text: '← Voltar', onClick: () => store.set(closeSettings(store.get())) }));
-main.append(audio, later, settings);
+main.append(audio, transcript, summary, settings);
 mountStepAudio(audio, store);
+mountStepTranscript(transcript, store);
+mountStepSummary(summary, store);
 
-// Placeholders até as Tasks 13 e 14.
+// Placeholder até a Task 14.
 store.subscribe((s) => {
-  later.hidden = !(s.view === 'steps' && s.step !== 1);
   settings.hidden = s.view !== 'settings';
 });
 

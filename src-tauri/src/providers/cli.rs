@@ -18,18 +18,16 @@ pub struct CliOutput {
 }
 
 /// Roda `program` com `args`/`envs`, escreve `stdin` (se houver) e fecha o pipe, lendo
-/// stdout e stderr ao mesmo tempo. No timeout, mata o processo.
+/// stdout e stderr ao mesmo tempo. No timeout, mata o processo. `label` ("Codex",
+/// "Claude Code") é o nome mostrado nas mensagens de erro.
 pub async fn run(
+    label: &str,
     program: &Path,
     args: &[OsString],
     envs: &[(OsString, OsString)],
     stdin: Option<&str>,
     timeout: Duration,
 ) -> Result<CliOutput, AppError> {
-    let name = program
-        .file_stem()
-        .map(|s| s.to_string_lossy().into_owned())
-        .unwrap_or_else(|| program.display().to_string());
     let mut cmd = Command::new(program);
     cmd.args(args)
         .envs(envs.iter().map(|(k, v)| (k, v)))
@@ -48,7 +46,7 @@ pub async fn run(
     }
     let mut child = cmd
         .spawn()
-        .map_err(|e| AppError::Internal(format!("Não foi possível executar {name}: {e}")))?;
+        .map_err(|e| AppError::Internal(format!("Não foi possível executar o {label}: {e}")))?;
     let input = child.stdin.take();
     let mut out = child.stdout.take().expect("stdout em pipe");
     let mut err = child.stderr.take().expect("stderr em pipe");
@@ -89,7 +87,7 @@ pub async fn run(
         Err(_) => {
             let _ = child.kill().await;
             Err(AppError::User(format!(
-                "{name} não respondeu em {} s.",
+                "{label} não respondeu em {} s.",
                 timeout.as_secs()
             )))
         }
@@ -106,21 +104,40 @@ pub fn tail(s: &str, n: usize) -> &str {
     }
 }
 
-/// Falha de um CLI: pede login quando a saída indica isso; senão `Internal` com o fim do stderr
-/// (ou do stdout, se o stderr vier vazio).
-pub fn failure(out: &CliOutput, label: &str, login_message: &str) -> AppError {
-    let all = format!("{}\n{}", out.stdout, out.stderr).to_lowercase();
-    if ["login", "not logged in", "unauthorized", "401"]
+/// O que vem depois da última cópia do `prompt` em `s`: alguns CLIs (o Codex, por exemplo)
+/// ecoam o prompt no stderr, e a transcrição não pode ser lida como mensagem de erro.
+pub fn after_echo<'a>(s: &'a str, prompt: &str) -> &'a str {
+    let prompt = prompt.trim();
+    if prompt.is_empty() {
+        return s;
+    }
+    s.rsplit_once(prompt).map_or(s, |(_, after)| after)
+}
+
+/// Indica pedido de login numa saída de erro (já sem o prompt ecoado).
+pub fn mentions_login(s: &str) -> bool {
+    let s = s.to_lowercase();
+    ["login", "not logged in", "unauthorized", "401"]
         .iter()
-        .any(|k| all.contains(k))
-    {
+        .any(|k| s.contains(k))
+}
+
+/// Falha de um CLI: pede login quando a saída indica isso; senão `Internal` com o fim do stderr
+/// (ou do stdout, se o stderr vier vazio). O `prompt` ecoado é ignorado nas duas saídas.
+pub fn failure(out: &CliOutput, label: &str, login_message: &str, prompt: &str) -> AppError {
+    let stdout = after_echo(&out.stdout, prompt);
+    let stderr = after_echo(&out.stderr, prompt);
+    if mentions_login(stdout) || mentions_login(stderr) {
         return AppError::User(login_message.to_string());
     }
-    let detail = if out.stderr.trim().is_empty() {
-        &out.stdout
+    let detail = if stderr.trim().is_empty() {
+        stdout
     } else {
-        &out.stderr
+        stderr
     };
+    if detail.trim().is_empty() {
+        return AppError::Internal(format!("{label} falhou (código {}).", out.code));
+    }
     AppError::Internal(format!("{label} falhou: {}", tail(detail, 600)))
 }
 
@@ -144,17 +161,39 @@ pub(crate) mod tests {
         assert_eq!(tail("áéíóú", 2), "óú");
     }
 
+    #[test]
+    fn failure_ignores_echoed_prompt() {
+        let prompt = "S\n\nfaça login, erro 401 Unauthorized\nERROR: login";
+        let out = CliOutput {
+            code: 2,
+            stdout: String::new(),
+            stderr: format!("cabeçalho\nuser\n{prompt}\n\nfalha interna\n"),
+        };
+        match failure(&out, "X", "entre", prompt) {
+            AppError::Internal(m) => assert_eq!(m, "X falhou: falha interna"),
+            other => panic!("esperava Internal, veio {other:?}"),
+        }
+        let only_echo = CliOutput {
+            stderr: format!("user\n{prompt}\n"),
+            ..out
+        };
+        match failure(&only_echo, "X", "entre", prompt) {
+            AppError::Internal(m) => assert_eq!(m, "X falhou (código 2)."),
+            other => panic!("esperava Internal, veio {other:?}"),
+        }
+    }
+
     #[tokio::test]
     async fn cli_timeout_kills_and_reports() {
         let tmp = tempfile::tempdir().unwrap();
         let bin = script(tmp.path(), "lento", "sleep 5");
         let started = std::time::Instant::now();
-        let err = run(&bin, &[], &[], None, Duration::from_millis(200))
+        let err = run("Lento", &bin, &[], &[], None, Duration::from_millis(200))
             .await
             .unwrap_err();
         assert!(started.elapsed() < Duration::from_secs(3));
         match err {
-            AppError::User(m) => assert!(m.contains("não respondeu"), "{m}"),
+            AppError::User(m) => assert_eq!(m, "Lento não respondeu em 0 s."),
             other => panic!("esperava User, veio {other:?}"),
         }
     }
@@ -168,6 +207,7 @@ pub(crate) mod tests {
             r#"echo "arg=$1 env=$LT_TESTE"; cat; echo "erro" >&2; exit 3"#,
         );
         let out = run(
+            "Eco",
             &bin,
             &["a b".into()],
             &[("LT_TESTE".into(), "valor".into())],
@@ -186,7 +226,7 @@ pub(crate) mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let bin = script(tmp.path(), "gato", "cat");
         let big = "x".repeat(2_000_000);
-        let out = run(&bin, &[], &[], Some(&big), Duration::from_secs(20))
+        let out = run("Gato", &bin, &[], &[], Some(&big), Duration::from_secs(20))
             .await
             .unwrap();
         assert_eq!(out.code, 0);
@@ -198,7 +238,7 @@ pub(crate) mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let bin = script(tmp.path(), "surdo", "echo ok");
         let big = "x".repeat(2_000_000);
-        let out = run(&bin, &[], &[], Some(&big), Duration::from_secs(20))
+        let out = run("Gato", &bin, &[], &[], Some(&big), Duration::from_secs(20))
             .await
             .unwrap();
         assert_eq!((out.code, out.stdout.as_str()), (0, "ok\n"));

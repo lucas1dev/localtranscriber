@@ -81,6 +81,16 @@ pub struct ProviderCtx {
     pub claude: Option<claude_code::ClaudeCode>,
 }
 
+/// Nome do provedor de API na mensagem de chave ausente.
+fn api_name(id: ProviderId) -> &'static str {
+    match id {
+        ProviderId::Openai => "OpenAI",
+        ProviderId::Anthropic => "Anthropic",
+        ProviderId::Gemini => "Gemini",
+        _ => label(id),
+    }
+}
+
 fn api_key(id: ProviderId, ctx: &ProviderCtx) -> Result<String, AppError> {
     let stored = match keychain_account(id) {
         Some(account) => ctx.secrets.get(account)?,
@@ -88,8 +98,8 @@ fn api_key(id: ProviderId, ctx: &ProviderCtx) -> Result<String, AppError> {
     };
     stored.ok_or_else(|| {
         AppError::User(format!(
-            "Adicione uma chave de API {} em Configurações → Contas de IA.",
-            label(id)
+            "Adicione uma chave de API da {} em Configurações → Contas de IA.",
+            api_name(id)
         ))
     })
 }
@@ -172,9 +182,16 @@ mod tests {
         assert!(m.contains("Configurações → Contas de IA"), "{m}");
         assert_eq!(
             m,
-            "Adicione uma chave de API OpenAI (API) em Configurações → Contas de IA."
+            "Adicione uma chave de API da OpenAI em Configurações → Contas de IA."
         );
-        assert!(user_err(build(ProviderId::Gemini, None, &c)).contains("Gemini (API)"));
+        assert_eq!(
+            user_err(build(ProviderId::Anthropic, None, &c)),
+            "Adicione uma chave de API da Anthropic em Configurações → Contas de IA."
+        );
+        assert_eq!(
+            user_err(build(ProviderId::Gemini, None, &c)),
+            "Adicione uma chave de API da Gemini em Configurações → Contas de IA."
+        );
     }
 
     #[tokio::test]

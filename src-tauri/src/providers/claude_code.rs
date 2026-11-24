@@ -32,7 +32,12 @@ pub struct ClaudeCode {
 }
 
 pub fn locate(home: &Path, path_var: Option<OsString>) -> Option<ClaudeCode> {
-    find_executable("claude", &claude_search_dirs(home), path_var).map(|bin| ClaudeCode { bin })
+    locate_in(&claude_search_dirs(home), path_var)
+}
+
+/// Procura o `claude` em `dirs` e depois no `path_var`.
+pub fn locate_in(dirs: &[PathBuf], path_var: Option<OsString>) -> Option<ClaudeCode> {
+    find_executable("claude", dirs, path_var).map(|bin| ClaudeCode { bin })
 }
 
 impl ClaudeCode {
@@ -41,7 +46,8 @@ impl ClaudeCode {
             return AuthStatus::Missing;
         }
         let args = [OsString::from("auth"), OsString::from("status")];
-        let Ok(out) = cli::run(&self.bin, &args, &[], None, STATUS_TIMEOUT).await else {
+        let Ok(out) = cli::run("Claude Code", &self.bin, &args, &[], None, STATUS_TIMEOUT).await
+        else {
             return AuthStatus::LoggedOut;
         };
         let Ok(json) = serde_json::from_str::<serde_json::Value>(out.stdout.trim()) else {
@@ -92,9 +98,17 @@ impl Llm for ClaudeCodeLlm {
             args.push("--model".into());
             args.push(model.into());
         }
-        let out = cli::run(&self.bin, &args, &[], Some(user), EXEC_TIMEOUT).await?;
+        let out = cli::run(
+            "Claude Code",
+            &self.bin,
+            &args,
+            &[],
+            Some(user),
+            EXEC_TIMEOUT,
+        )
+        .await?;
         if out.code != 0 {
-            return Err(cli::failure(&out, "Claude Code", LOGIN_REQUIRED));
+            return Err(cli::failure(&out, "Claude Code", LOGIN_REQUIRED, user));
         }
         let answer = out.stdout.trim();
         if answer.is_empty() {
@@ -125,15 +139,17 @@ mod tests {
     #[test]
     fn claude_locate_finds_in_local_bin() {
         let tmp = tempfile::tempdir().unwrap();
-        let want = make_exe(&tmp.path().join(".local").join("bin"), "claude");
-        let found = locate(tmp.path(), Some("".into())).expect("deveria achar o claude");
+        let local_bin = tmp.path().join(".local").join("bin");
+        let want = make_exe(&local_bin, "claude");
+        let found = locate_in(&[local_bin], Some("".into())).expect("deveria achar o claude");
         assert_eq!(found.bin, want);
     }
 
     #[test]
     fn claude_locate_none_when_missing() {
         let tmp = tempfile::tempdir().unwrap();
-        assert!(locate(tmp.path(), Some("".into())).is_none());
+        let local_bin = tmp.path().join(".local").join("bin");
+        assert!(locate_in(&[local_bin], Some("".into())).is_none());
     }
 
     #[cfg(unix)]
@@ -238,6 +254,24 @@ mod tests {
                 .await
             {
                 Err(AppError::Internal(m)) => assert_eq!(m, "Claude Code falhou: quebrou"),
+                other => panic!("esperava Internal, veio {other:?}"),
+            }
+        }
+
+        #[tokio::test]
+        async fn failure_ignores_login_words_in_echoed_prompt() {
+            let tmp = tempfile::tempdir().unwrap();
+            let bin = script(
+                tmp.path(),
+                "eco",
+                "p=$(cat); printf 'user\\n%s\\n' \"$p\" >&2; echo 'falha interna' >&2; exit 2",
+            );
+            let user = "Pedi para faça login de novo, deu erro 401 Unauthorized.";
+            match (ClaudeCodeLlm { bin, model: None })
+                .complete("S", user)
+                .await
+            {
+                Err(AppError::Internal(m)) => assert_eq!(m, "Claude Code falhou: falha interna"),
                 other => panic!("esperava Internal, veio {other:?}"),
             }
         }

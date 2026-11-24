@@ -53,6 +53,33 @@ impl Serialize for AuthStatus {
     }
 }
 
+/// stdout sem espaços nas pontas; se vazio, a primeira linha do stderr; senão "conectado".
+fn login_detail(out: &cli::CliOutput) -> String {
+    let stdout = out.stdout.trim();
+    let detail = if stdout.is_empty() {
+        out.stderr.trim().lines().next().unwrap_or("").trim()
+    } else {
+        stdout
+    };
+    if detail.is_empty() {
+        "conectado"
+    } else {
+        detail
+    }
+    .to_string()
+}
+
+/// Linhas `ERROR…`/`error:` do stderr que vêm depois do prompt ecoado: o Codex 0.172.0
+/// repete no stderr o prompt inteiro (SYSTEM + transcrição) antes dos logs.
+fn error_lines(out: &cli::CliOutput, prompt: &str) -> String {
+    cli::after_echo(&out.stderr, prompt)
+        .lines()
+        .map(str::trim)
+        .filter(|l| l.to_lowercase().starts_with("error"))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 #[derive(Debug, Clone)]
 pub struct Codex {
     pub bin: PathBuf,
@@ -62,7 +89,15 @@ pub struct Codex {
 impl Codex {
     async fn run(&self, args: &[&str], timeout: Duration) -> Result<cli::CliOutput, AppError> {
         let args: Vec<OsString> = args.iter().map(OsString::from).collect();
-        cli::run(&self.bin, &args, &codex_env(&self.home), None, timeout).await
+        cli::run(
+            "Codex",
+            &self.bin,
+            &args,
+            &codex_env(&self.home),
+            None,
+            timeout,
+        )
+        .await
     }
 
     pub async fn status(&self) -> AuthStatus {
@@ -70,7 +105,7 @@ impl Codex {
             return AuthStatus::Missing;
         }
         match self.run(&["login", "status"], STATUS_TIMEOUT).await {
-            Ok(out) if out.code == 0 => AuthStatus::LoggedIn(out.stdout.trim().to_string()),
+            Ok(out) if out.code == 0 => AuthStatus::LoggedIn(login_detail(&out)),
             _ => AuthStatus::LoggedOut,
         }
     }
@@ -113,6 +148,26 @@ pub struct CodexLlm {
     pub model: Option<String>,
 }
 
+impl CodexLlm {
+    /// Pede login se as linhas de erro (sem o prompt ecoado) falarem disso ou se
+    /// `codex login status` disser que não há login; senão `Internal` com essas linhas.
+    async fn failure(&self, out: &cli::CliOutput, prompt: &str) -> AppError {
+        let errors = error_lines(out, prompt);
+        let codex = Codex {
+            bin: self.bin.clone(),
+            home: self.home.clone(),
+        };
+        if cli::mentions_login(&errors) || !matches!(codex.status().await, AuthStatus::LoggedIn(_))
+        {
+            return AppError::User(LOGIN_REQUIRED.into());
+        }
+        if errors.is_empty() {
+            return AppError::Internal(format!("Codex falhou (código {}).", out.code));
+        }
+        AppError::Internal(format!("Codex falhou: {}", cli::tail(&errors, 600)))
+    }
+}
+
 #[async_trait]
 impl Llm for CodexLlm {
     async fn complete(&self, system: &str, user: &str) -> Result<String, AppError> {
@@ -135,6 +190,7 @@ impl Llm for CodexLlm {
         args.push("-".into());
         let prompt = format!("{system}\n\n{user}");
         let out = cli::run(
+            "Codex",
             &self.bin,
             &args,
             &codex_env(&self.home),
@@ -143,7 +199,7 @@ impl Llm for CodexLlm {
         )
         .await?;
         if out.code != 0 {
-            return Err(cli::failure(&out, "Codex", LOGIN_REQUIRED));
+            return Err(self.failure(&out, &prompt).await);
         }
         let answer = std::fs::read_to_string(&last).unwrap_or_default();
         let answer = answer.trim();
@@ -253,6 +309,24 @@ done
         let tmp = tempfile::tempdir().unwrap();
         let home = tmp.path().join("home");
         let ok = script(tmp.path(), "ok", "echo 'Logged in using ChatGPT'; exit 0");
+        let on_stderr = script(
+            tmp.path(),
+            "err",
+            "echo; echo ' Logged in using an API key ' >&2",
+        );
+        let silent = script(tmp.path(), "mudo", "exit 0");
+        for (bin, want) in [
+            (on_stderr, "Logged in using an API key"),
+            (silent, "conectado"),
+        ] {
+            let st = Codex {
+                bin,
+                home: home.clone(),
+            }
+            .status()
+            .await;
+            assert_eq!(st, AuthStatus::LoggedIn(want.into()));
+        }
         let st = Codex {
             bin: ok,
             home: home.clone(),
@@ -277,47 +351,96 @@ done
         );
     }
 
-    #[tokio::test]
-    async fn exec_unauthorized_asks_for_login() {
-        let tmp = tempfile::tempdir().unwrap();
-        let bin = script(
-            tmp.path(),
-            "codex",
-            "cat >/dev/null; echo 'ERROR: unexpected status 401 Unauthorized' >&2; exit 1",
-        );
-        let llm = CodexLlm {
-            bin,
-            home: tmp.path().join("home"),
-            model: None,
+    /// Codex falso para falhas: `login status` responde conforme `logged_in`; `exec` ecoa o
+    /// prompt no stderr como o 0.172.0 real e depois roda `then`.
+    fn failing_codex(dir: &std::path::Path, logged_in: bool, then: &str) -> CodexLlm {
+        let status = if logged_in {
+            "echo 'Logged in using ChatGPT'; exit 0"
+        } else {
+            "echo 'Not logged in' >&2; exit 1"
         };
-        match llm.complete("S", "U").await {
-            Err(AppError::User(m)) => {
-                assert_eq!(
-                    m,
-                    "Entre com sua conta ChatGPT em Configurações → Contas de IA."
-                )
-            }
+        let bin = script(
+            dir,
+            "codex",
+            &format!(
+                r#"if [ "$1" = "login" ]; then {status}; fi
+p=$(cat)
+printf 'OpenAI Codex v0.172.0\n--------\nuser\n%s\n\n' "$p" >&2
+{then}"#
+            ),
+        );
+        CodexLlm {
+            bin,
+            home: dir.join("home"),
+            model: None,
+        }
+    }
+
+    /// Transcrição que fala de login e 401 e tem até uma linha começando por "ERROR".
+    const TRICKY: &str =
+        "Pedi para faça login de novo, deu erro 401 Unauthorized.\nERROR: login 401";
+
+    fn login_required(r: Result<String, AppError>) {
+        match r {
+            Err(AppError::User(m)) => assert_eq!(
+                m,
+                "Entre com sua conta ChatGPT em Configurações → Contas de IA."
+            ),
             other => panic!("esperava User, veio {other:?}"),
         }
     }
 
-    #[tokio::test]
-    async fn exec_other_failure_is_internal_with_stderr_tail() {
-        let tmp = tempfile::tempdir().unwrap();
-        let bin = script(
-            tmp.path(),
-            "codex",
-            "cat >/dev/null; echo 'disco cheio' >&2; exit 2",
-        );
-        let llm = CodexLlm {
-            bin,
-            home: tmp.path().join("home"),
-            model: None,
-        };
-        match llm.complete("S", "U").await {
-            Err(AppError::Internal(m)) => assert_eq!(m, "Codex falhou: disco cheio"),
+    fn internal(r: Result<String, AppError>) -> String {
+        match r {
+            Err(AppError::Internal(m)) => m,
             other => panic!("esperava Internal, veio {other:?}"),
         }
+    }
+
+    #[tokio::test]
+    async fn exec_unauthorized_asks_for_login() {
+        let tmp = tempfile::tempdir().unwrap();
+        let llm = failing_codex(
+            tmp.path(),
+            true,
+            "echo 'ERROR: unexpected status 401 Unauthorized: Missing bearer' >&2; exit 1",
+        );
+        login_required(llm.complete("S", TRICKY).await);
+    }
+
+    #[tokio::test]
+    async fn exec_failure_when_logged_out_asks_for_login() {
+        let tmp = tempfile::tempdir().unwrap();
+        let llm = failing_codex(
+            tmp.path(),
+            false,
+            "echo 'ERROR: stream disconnected' >&2; exit 1",
+        );
+        login_required(llm.complete("S", "U").await);
+    }
+
+    #[tokio::test]
+    async fn exec_failure_ignores_login_words_in_echoed_prompt() {
+        let tmp = tempfile::tempdir().unwrap();
+        let llm = failing_codex(
+            tmp.path(),
+            true,
+            "echo '2026-11-24T16:31:07Z ERROR codex_api: x' >&2\n\
+             echo 'ERROR: stream disconnected before completion' >&2; exit 1",
+        );
+        let m = internal(llm.complete("S", TRICKY).await);
+        assert_eq!(
+            m,
+            "Codex falhou: ERROR: stream disconnected before completion"
+        );
+    }
+
+    #[tokio::test]
+    async fn exec_failure_without_error_lines_does_not_leak_transcript() {
+        let tmp = tempfile::tempdir().unwrap();
+        let llm = failing_codex(tmp.path(), true, "exit 2");
+        let m = internal(llm.complete("S", TRICKY).await);
+        assert_eq!(m, "Codex falhou (código 2).");
     }
 
     #[test]

@@ -1,6 +1,7 @@
 // Configurações › Contas de IA — assinatura, chave de API e local.
 import { api, errorMessage } from '../api.js';
 import { h, showText } from '../dom.js';
+import { mergeSettings, SETTINGS_NOT_LOADED } from '../flow.js';
 import { connectedLabel } from '../providers.js';
 
 const API_KEY_PROVIDERS = ['openai', 'anthropic', 'gemini'];
@@ -89,7 +90,9 @@ export function mountSettingsAccounts(root, store) {
 
   const toggleClaude = () => run(async () => {
     try {
-      const saved = await api.setSettings({ ...store.get().settings, claude_code_enabled: claudeToggle.checked });
+      const next = mergeSettings(store.get().settings, { claude_code_enabled: claudeToggle.checked });
+      if (!next) throw new Error(SETTINGS_NOT_LOADED);
+      const saved = await api.setSettings(next);
       store.set({ settings: saved });
     } finally {
       await refresh();

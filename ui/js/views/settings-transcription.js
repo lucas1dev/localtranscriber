@@ -2,6 +2,7 @@
 import { api, errorMessage } from '../api.js';
 import { h, showText } from '../dom.js';
 import { clearEntry, percentOf, refreshModels, startEntry } from '../downloads.js';
+import { mergeSettings, SETTINGS_NOT_LOADED } from '../flow.js';
 import { formatBytes } from '../format.js';
 import { LANGUAGES } from './step-audio.js';
 
@@ -63,7 +64,9 @@ export function mountSettingsTranscription(root, store) {
     await refreshModels(store);
   });
   const saveLanguage = () => run(async () => {
-    const saved = await api.setSettings({ ...store.get().settings, default_language: langSel.value });
+    const next = mergeSettings(store.get().settings, { default_language: langSel.value });
+    if (!next) throw new Error(SETTINGS_NOT_LOADED);
+    const saved = await api.setSettings(next);
     store.set({ settings: saved });
   });
 

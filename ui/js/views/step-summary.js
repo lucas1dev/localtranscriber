@@ -2,17 +2,14 @@
 import { api, errorMessage } from '../api.js';
 import { h } from '../dom.js';
 import { saveText } from '../export.js';
-import { failJob, goTo, openSettings, startJob } from '../flow.js';
+import { failJob, goTo, mergeSettings, openSettings, startJob } from '../flow.js';
 import { interceptLinks, renderMarkdown } from '../markdown.js';
 import { configuredProviders, initialProvider, usableProviders } from '../providers.js';
 import { buildCompareRequest, buildSummaryRequest } from '../requests.js';
+import { OLLAMA_DEFAULT, STYLES, ollamaDefaultModel, pickStyle } from '../summary-options.js';
 
-const STYLES = [
-  ['executive', 'Executivo'], ['detailed', 'Detalhado'], ['academic', 'Acadêmico'],
-  ['meeting', 'Reunião / ata'], ['class', 'Aula / estudo'], ['podcast', 'Podcast'], ['custom', 'Personalizado'],
-];
 const DEFAULT_MODEL = {
-  openai: 'gpt-5.1', anthropic: 'claude-sonnet-4-5', gemini: 'gemini-2.5-flash', ollama: 'qwen3:8b',
+  openai: 'gpt-5.1', anthropic: 'claude-sonnet-4-5', gemini: 'gemini-2.5-flash', ollama: OLLAMA_DEFAULT,
 };
 const ACCOUNT_DEFAULT = 'padrão da sua conta';
 const MAX_COMPARE = 4;
@@ -63,8 +60,10 @@ export function mountStepSummary(root, store) {
   }
 
   async function saveChoice() {
+    const next = mergeSettings(store.get().settings, { summary_provider: ui.provider, summary_style: ui.style });
+    if (!next) return; // configurações não carregaram: não grava por cima
     try {
-      const saved = await api.setSettings({ ...store.get().settings, summary_provider: ui.provider, summary_style: ui.style });
+      const saved = await api.setSettings(next);
       store.set({ settings: saved });
     } catch (e) {
       store.set({ error: errorMessage(e) });
@@ -96,7 +95,8 @@ export function mountStepSummary(root, store) {
     if (!patch.job) return;
     let items;
     try {
-      items = await api.compare(buildCompareRequest(store.get(), { ...form(), providers: [...ui.compare] }));
+      const defaults = { ollama: ollamaDefaultModel(ui.ollama) };
+      items = await api.compare(buildCompareRequest(store.get(), { ...form(), providers: [...ui.compare], defaults }));
     } catch (e) {
       store.set(failJob(store.get(), errorMessage(e)));
       return;
@@ -151,6 +151,13 @@ export function mountStepSummary(root, store) {
     }
   }
 
+  // Sem o modelo padrão instalado no Ollama, já preenche o primeiro modelo instalado.
+  function preselectOllamaModel() {
+    if (ui.provider !== 'ollama' || ui.model) return;
+    const model = ollamaDefaultModel(ui.ollama);
+    if (model) { ui.model = model; modelInput.value = model; }
+  }
+
   function placeholder() {
     if (ui.provider === 'ollama' && ui.ollama.length) return `Instalados: ${ui.ollama.slice(0, 4).join(', ')}`;
     return DEFAULT_MODEL[ui.provider] || ACCOUNT_DEFAULT;
@@ -184,8 +191,9 @@ export function mountStepSummary(root, store) {
     if (visible && !wasVisible) refreshProviders();
     wasVisible = visible;
 
-    if (ui.style === null && s.settings) ui.style = STYLES.some(([v]) => v === s.settings.summary_style) ? s.settings.summary_style : 'executive';
+    ui.style = pickStyle(ui.style, s.settings, visible);
     syncProviders(s);
+    preselectOllamaModel();
     if (ui.style !== null) styleSel.value = ui.style;
     modelInput.placeholder = placeholder();
     customArea.hidden = ui.style !== 'custom';

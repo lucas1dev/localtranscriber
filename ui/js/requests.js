@@ -12,9 +12,12 @@ export function buildSummaryRequest(state, form) {
 }
 
 // O modelo digitado vale só para o provedor do seletor, se ele estiver entre os comparados.
+// `form.defaults` ({provedor: modelo}) vale para os comparados sem modelo digitado.
 export function buildCompareRequest(state, form) {
   const model = form.model.trim();
-  const models = model && form.providers.includes(form.provider) ? { [form.provider]: model } : {};
+  const models = Object.fromEntries(Object.entries(form.defaults ?? {})
+    .filter(([id, m]) => m && form.providers.includes(id)));
+  if (model && form.providers.includes(form.provider)) models[form.provider] = model;
   return {
     text: state.transcript.text,
     providers: form.providers,

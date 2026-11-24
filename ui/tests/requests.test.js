@@ -35,3 +35,10 @@ test('buildCompareRequest: sem modelo ou provedor do seletor fora da seleção, 
   assert.deepEqual(buildCompareRequest(state, { ...base, provider: 'gemini', model: '' }).models, {});
   assert.deepEqual(buildCompareRequest(state, { ...base, provider: 'ollama', model: 'x' }).models, {});
 });
+
+test('buildCompareRequest: modelo padrão alternativo do Ollama entra quando nada foi digitado para ele', () => {
+  const base = { providers: ['openai', 'ollama'], style: 'executive', customInstructions: '', defaults: { ollama: 'llama3.2:3b' } };
+  assert.deepEqual(buildCompareRequest(state, { ...base, provider: 'openai', model: '' }).models, { ollama: 'llama3.2:3b' });
+  assert.deepEqual(buildCompareRequest(state, { ...base, provider: 'ollama', model: 'gemma3:4b' }).models, { ollama: 'gemma3:4b' });
+  assert.deepEqual(buildCompareRequest(state, { ...base, providers: ['openai', 'gemini'], provider: 'openai', model: '' }).models, {});
+});

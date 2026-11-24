@@ -81,3 +81,11 @@ export function needsReplaceConfirm(state) {
 export function failJob(state, message) {
   return { job: null, error: message };
 }
+
+// Configurações com `patch` aplicado; null se elas não carregaram (aí não se salva nada,
+// para não gravar por cima do arquivo com valores vazios).
+export function mergeSettings(settings, patch) {
+  return settings ? { ...settings, ...patch } : null;
+}
+
+export const SETTINGS_NOT_LOADED = 'As configurações não foram carregadas. Reabra o app e tente de novo.';

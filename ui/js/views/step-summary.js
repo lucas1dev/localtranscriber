@@ -4,6 +4,7 @@ import { h } from '../dom.js';
 import { downloadText } from '../export.js';
 import { failJob, goTo, openSettings, startJob } from '../flow.js';
 import { renderMarkdown } from '../markdown.js';
+import { configuredProviders, initialProvider, usableProviders } from '../providers.js';
 import { buildCompareRequest, buildSummaryRequest } from '../requests.js';
 
 const STYLES = [
@@ -23,8 +24,8 @@ export function mountStepSummary(root, store) {
   let shownSummaries = null;
 
   const label = (id) => ui.providers.find((p) => p.id === id)?.label || id;
-  const usable = () => ui.providers.filter((p) => !(p.kind === 'claude_code' && p.enabled === false));
-  const configured = () => usable().filter((p) => p.configured);
+  const usable = () => usableProviders(ui.providers);
+  const configured = () => configuredProviders(ui.providers);
 
   // --- elementos ---
   const providerSel = h('select', { id: 'prov-sel', onChange: () => { ui.provider = providerSel.value; ui.model = ''; modelInput.value = ''; render(store.get()); } });
@@ -112,7 +113,7 @@ export function mountStepSummary(root, store) {
       return;
     }
     if (configured().some((p) => p.id === 'ollama')) {
-      try { ui.ollama = await api.ollamaModels(); } catch { ui.ollama = []; }
+      try { ui.ollama = (await api.ollamaModels()).models || []; } catch (e) { console.error(e); ui.ollama = []; }
     } else {
       ui.ollama = [];
     }
@@ -136,8 +137,7 @@ export function mountStepSummary(root, store) {
     const ids = configured().map((p) => p.id);
     ui.compare = new Set([...ui.compare].filter((id) => ids.includes(id)));
     if (!ids.includes(ui.provider)) {
-      const pref = s.settings?.summary_provider;
-      ui.provider = ids.includes(pref) ? pref : (ids[0] || '');
+      ui.provider = initialProvider(ui.providers, s.settings?.summary_provider) || '';
       ui.model = '';
       modelInput.value = '';
     }

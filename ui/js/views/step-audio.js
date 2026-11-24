@@ -69,7 +69,7 @@ export function mountStepAudio(root, store) {
     class: 'btn', type: 'button', text: 'Usar este texto',
     onClick: () => {
       const text = pasteArea.value.trim();
-      if (!text) return;
+      if (!text || store.get().job) return;
       store.set(pasteText(store.get(), text));
       pasteArea.value = '';
       pasteBox.hidden = true;
@@ -220,6 +220,7 @@ export function mountStepAudio(root, store) {
     modelSel.disabled = langSel.disabled = busy;
     goBtn.hidden = ui.tab !== 'file';
     goBtn.disabled = !canGo();
+    pasteBtn.disabled = busy;
     confirmPanel.hidden = !ui.confirming;
     if (ui.confirming) { goBtn.disabled = true; micBtn.disabled = true; }
 

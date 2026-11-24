@@ -35,6 +35,7 @@ const DELIVER_RETRY: Duration = Duration::from_millis(5);
 pub(super) const MIC_GONE: &str = "O microfone foi desconectado.";
 const OUTPUT_GONE: &str = "A saída de som foi desconectada.";
 pub(super) const SYSTEM_PERMISSION: &str = "Permita a gravação do som do computador em Ajustes do Sistema → Privacidade e Segurança → Gravação de áudio do sistema e tente de novo.";
+const WINDOWS_MIC_PRIVACY: &str = "Permita o acesso ao microfone em Configurações → Privacidade e segurança → Microfone (inclusive para aplicativos da área de trabalho) e tente de novo.";
 pub(super) const MIC_PERMISSION: &str = "Permita a gravação do microfone em Ajustes do Sistema → Privacidade e Segurança → Microfone e tente de novo.";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -492,6 +493,10 @@ impl Fault {
     }
 
     fn message(self, source: SourceKind) -> String {
+        self.message_on(Platform::CURRENT, source)
+    }
+
+    fn message_on(self, platform: Platform, source: SourceKind) -> String {
         let generic = match source {
             SourceKind::Mic => "A captura do microfone falhou.",
             SourceKind::System => "A captura do som do computador falhou.",
@@ -499,11 +504,26 @@ impl Fault {
         let text = match (self, source) {
             (Fault::Disconnected, SourceKind::Mic) => MIC_GONE,
             (Fault::Disconnected, SourceKind::System) => OUTPUT_GONE,
-            (Fault::Permission, s) => permission_message(s).unwrap_or(generic),
+            (Fault::Permission, s) => permission_message(platform, s).unwrap_or(generic),
             (Fault::Other, _) => generic,
         };
         text.to_string()
     }
+}
+
+/// Onde o app roda (só macOS e Windows); parâmetro para testar as mensagens das duas.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Platform {
+    Mac,
+    Windows,
+}
+
+impl Platform {
+    const CURRENT: Platform = if cfg!(target_os = "macos") {
+        Platform::Mac
+    } else {
+        Platform::Windows
+    };
 }
 
 /// Mensagem de falha genérica da captura de `source`.
@@ -511,31 +531,50 @@ pub(super) fn capture_failed(source: SourceKind) -> String {
     Fault::Other.message(source)
 }
 
-/// Mensagem de permissão negada; só o macOS pede permissão.
-fn permission_message(source: SourceKind) -> Option<&'static str> {
-    if !cfg!(target_os = "macos") {
-        return None;
+/// Mensagem de permissão negada. No Windows não há pedido, mas o microfone pode
+/// estar bloqueado nas configurações de privacidade; o som do computador não.
+fn permission_message(platform: Platform, source: SourceKind) -> Option<&'static str> {
+    match (platform, source) {
+        (Platform::Mac, SourceKind::Mic) => Some(MIC_PERMISSION),
+        (Platform::Mac, SourceKind::System) => Some(SYSTEM_PERMISSION),
+        (Platform::Windows, SourceKind::Mic) => Some(WINDOWS_MIC_PRIVACY),
+        (Platform::Windows, SourceKind::System) => None,
     }
-    Some(match source {
-        SourceKind::Mic => MIC_PERMISSION,
-        SourceKind::System => SYSTEM_PERMISSION,
-    })
+}
+
+/// Acesso negado: o tipo da cpal ou, no WASAPI, `E_ACCESSDENIED`, que a cpal 0.18
+/// entrega como `BackendError` com o texto (localizado) do sistema seguido de
+/// "(os error -2147024891)".
+fn is_access_denied(err: &cpal::Error) -> bool {
+    err.kind() == cpal::ErrorKind::PermissionDenied
+        || err.message().is_some_and(|m| {
+            let m = m.to_ascii_lowercase();
+            m.contains("-2147024891") || m.contains("0x80070005")
+        })
 }
 
 /// Erro ao abrir o stream, em português para quem usa.
 fn open_error(source: SourceKind, err: &cpal::Error) -> AppError {
+    open_error_on(Platform::CURRENT, source, err)
+}
+
+fn open_error_on(platform: Platform, source: SourceKind, err: &cpal::Error) -> AppError {
     use cpal::ErrorKind as K;
     let what = match source {
         SourceKind::Mic => "o microfone",
         SourceKind::System => "o som do computador",
     };
-    let text = match (err.kind(), permission_message(source)) {
-        (K::PermissionDenied, Some(msg)) => msg.to_string(),
+    let denied = is_access_denied(err)
+        .then(|| permission_message(platform, source))
+        .flatten();
+    let text = match (err.kind(), denied) {
+        (_, Some(msg)) => msg.to_string(),
         (K::DeviceNotAvailable, _) => match source {
             SourceKind::Mic => MIC_GONE.to_string(),
             SourceKind::System => OUTPUT_GONE.to_string(),
         },
         (K::DeviceBusy, _) => format!("Outro aplicativo está usando {what}."),
+        // O detalhe da cpal (em inglês) só no fim, entre parênteses.
         _ => format!("Não foi possível abrir {what} ({err})."),
     };
     AppError::User(text)
@@ -627,18 +666,18 @@ mod tests {
         );
     }
 
-    #[cfg(target_os = "macos")]
+    fn user_text(e: AppError) -> String {
+        match e {
+            AppError::User(m) => m,
+            other => panic!("esperava User, veio {other:?}"),
+        }
+    }
+
     #[test]
     fn permission_denied_maps_to_user_message() {
         let err = cpal::Error::new(cpal::ErrorKind::PermissionDenied);
-        match open_error(SourceKind::System, &err) {
-            AppError::User(m) => assert_eq!(m, SYSTEM_PERMISSION),
-            other => panic!("esperava User, veio {other:?}"),
-        }
-        match open_error(SourceKind::Mic, &err) {
-            AppError::User(m) => assert_eq!(m, MIC_PERMISSION),
-            other => panic!("esperava User, veio {other:?}"),
-        }
+        assert_eq!(user_text(open_error_on(Platform::Mac, SourceKind::System, &err)), SYSTEM_PERMISSION);
+        assert_eq!(user_text(open_error_on(Platform::Mac, SourceKind::Mic, &err)), MIC_PERMISSION);
         assert_eq!(
             SYSTEM_PERMISSION,
             "Permita a gravação do som do computador em Ajustes do Sistema → Privacidade e Segurança → Gravação de áudio do sistema e tente de novo."
@@ -646,6 +685,48 @@ mod tests {
         assert_eq!(
             MIC_PERMISSION,
             "Permita a gravação do microfone em Ajustes do Sistema → Privacidade e Segurança → Microfone e tente de novo."
+        );
+    }
+
+    #[test]
+    fn windows_mic_access_denied_points_to_privacy_settings() {
+        assert_eq!(
+            WINDOWS_MIC_PRIVACY,
+            "Permita o acesso ao microfone em Configurações → Privacidade e segurança → Microfone (inclusive para aplicativos da área de trabalho) e tente de novo."
+        );
+        let kind = cpal::Error::new(cpal::ErrorKind::PermissionDenied);
+        assert_eq!(user_text(open_error_on(Platform::Windows, SourceKind::Mic, &kind)), WINDOWS_MIC_PRIVACY);
+        // A cpal 0.18 entrega E_ACCESSDENIED como BackendError com o texto do sistema
+        // (localizado); o código do HRESULT aparece em "(os error -2147024891)".
+        for message in [
+            "Failed to initialize audio client: Access is denied. (os error -2147024891)",
+            "Falha ao iniciar: Acesso negado. (os error -2147024891)",
+            "HRESULT 0x80070005",
+        ] {
+            let err = cpal::Error::with_message(cpal::ErrorKind::BackendError, message);
+            assert_eq!(user_text(open_error_on(Platform::Windows, SourceKind::Mic, &err)), WINDOWS_MIC_PRIVACY, "{message}");
+        }
+        // O mesmo erro do som do computador não fala de microfone.
+        let err = cpal::Error::with_message(cpal::ErrorKind::BackendError, "Access is denied. (os error -2147024891)");
+        assert!(user_text(open_error_on(Platform::Windows, SourceKind::System, &err)).starts_with("Não foi possível abrir o som do computador ("));
+    }
+
+    #[test]
+    fn other_open_errors_start_in_portuguese_with_detail_at_the_end() {
+        let err = cpal::Error::with_message(cpal::ErrorKind::BackendError, "Device format query failed");
+        assert_eq!(
+            user_text(open_error_on(Platform::Windows, SourceKind::Mic, &err)),
+            "Não foi possível abrir o microfone (Device format query failed)."
+        );
+    }
+
+    #[test]
+    fn windows_runtime_permission_fault_uses_privacy_message() {
+        assert_eq!(Fault::Permission.message_on(Platform::Windows, SourceKind::Mic), WINDOWS_MIC_PRIVACY);
+        assert_eq!(Fault::Permission.message_on(Platform::Mac, SourceKind::Mic), MIC_PERMISSION);
+        assert_eq!(
+            Fault::Permission.message_on(Platform::Windows, SourceKind::System),
+            "A captura do som do computador falhou."
         );
     }
 

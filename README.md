@@ -38,7 +38,9 @@ Enquanto grava, uma bolinha vermelha pulsa ao lado do cronômetro e uma barra de
 
 **Dica:** use fone de ouvido. Sem fone, o microfone capta a fala dos outros saindo pelo alto-falante e ela é gravada duas vezes.
 
-**macOS:** na primeira vez que gravar, o macOS pede a permissão **Microfone** (para o microfone) e **Gravação de áudio do sistema** (para o som do computador). Se você negar, ou quiser mudar depois, vá em **Ajustes do Sistema → Privacidade e Segurança**. Com o microfone negado, o app avisa antes de começar. Com a gravação do som do computador negada, o macOS pode entregar silêncio em vez de um erro: a barra "Reunião" fica parada e o app sugere conferir a permissão. Isso exige macOS 14.6 ou mais novo. No Windows não há pedido de permissão.
+**macOS:** na primeira vez que gravar, o macOS pede a permissão **Microfone** (para o microfone) e **Gravação de áudio do sistema** (para o som do computador). Se você negar, ou quiser mudar depois, vá em **Ajustes do Sistema → Privacidade e Segurança**. Com o microfone negado, o app avisa antes de começar. Com a gravação do som do computador negada, o macOS pode entregar silêncio em vez de um erro: a barra "Reunião" fica parada e o app sugere conferir a permissão. Isso exige macOS 14.6 ou mais novo.
+
+**Windows:** não há pedido de permissão, mas o acesso ao microfone precisa estar liberado em **Configurações → Privacidade e segurança → Microfone**, inclusive a opção para aplicativos da área de trabalho. Se estiver bloqueado, o app avisa ao começar a gravar.
 
 **Fones Bluetooth:** quando o microfone do fone está em uso, o Bluetooth costuma passar para a qualidade de chamada e o som piora. Para uma qualidade melhor, grave com o microfone do computador e use o fone só para ouvir.
 

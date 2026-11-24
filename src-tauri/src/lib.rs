@@ -2,6 +2,7 @@ mod commands;
 mod credentials;
 pub mod error;
 mod models;
+mod navigation;
 mod paths;
 pub mod providers;
 pub mod summarize;
@@ -17,6 +18,7 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
+        .plugin(navigation::guard())
         .setup(|app| {
             let data_dir = app.path().app_data_dir()?;
             let paths = paths::AppPaths::from_data_dir(data_dir)?;

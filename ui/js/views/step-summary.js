@@ -3,7 +3,7 @@ import { api, errorMessage } from '../api.js';
 import { h } from '../dom.js';
 import { saveText } from '../export.js';
 import { failJob, goTo, openSettings, startJob } from '../flow.js';
-import { renderMarkdown } from '../markdown.js';
+import { interceptLinks, renderMarkdown } from '../markdown.js';
 import { configuredProviders, initialProvider, usableProviders } from '../providers.js';
 import { buildCompareRequest, buildSummaryRequest } from '../requests.js';
 
@@ -50,6 +50,9 @@ export function mountStepSummary(root, store) {
   compareBox.append(compareList, compareBtn);
 
   const results = h('div', { class: 'summary-results' });
+  results.addEventListener('click', (ev) => interceptLinks(ev, (url) => {
+    api.openUrl(url).catch((e) => store.set({ error: errorMessage(e) }));
+  }));
   const back = h('button', { class: 'btn', type: 'button', text: '← Voltar', onClick: () => store.set(goTo(store.get(), 2)) });
 
   root.append(options, customArea, h('div', { class: 'actions' }, genBtn, status), compareBox, results, h('div', { class: 'actions' }, back));

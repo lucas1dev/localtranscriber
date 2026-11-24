@@ -37,7 +37,7 @@ O motivo é transcrever e resumir reuniões. Saber o que foi dito por você e o 
 ## Anti-objetivos (seria um fracasso mesmo funcionando)
 
 - Pedir para instalar BlackHole, Loopback ou outro dispositivo virtual.
-- Um app que deixa de abrir em macOS anterior a 14.2. Hoje o mínimo é 11.0; nesses sistemas, só "Som do computador" e "Microfone + som do computador" ficam indisponíveis.
+- (Revisto: o autor escolheu subir o mínimo do app para macOS 14.6; ver Decisões.)
 - "Você" e "Reunião" fora de ordem por usarem relógios diferentes.
 - Perder o que já foi transcrito quando um dispositivo some no meio da gravação.
 
@@ -45,7 +45,7 @@ O motivo é transcrever e resumir reuniões. Saber o que foi dito por você e o 
 
 1. **Tudo nativo em Rust** (escolhida pelo autor). O backend captura as duas fontes:
    - microfone e lista de microfones pela crate `cpal`;
-   - som do computador no Mac por Core Audio *process tap* (macOS 14.2+);
+   - som do computador no Mac por Core Audio *process tap* (via `cpal`, macOS 14.6+);
    - som do computador no Windows por WASAPI loopback (`cpal` aceita abrir um stream de entrada sobre o dispositivo de saída).
 
    Um relógio só, PCM direto para o Whisper, sem FFmpeg por bloco. Custa reescrever a gravação do microfone, e resolve a dúvida que ficou aberta sobre o microfone dentro da janela do app no Mac.
@@ -58,6 +58,7 @@ O motivo é transcrever e resumir reuniões. Saber o que foi dito por você e o 
 - No modo duplo, opção **B**: fontes transcritas separadamente, intercaladas por tempo, com as etiquetas "Você" e "Reunião".
 - Captura nativa em Rust (abordagem 1).
 - Aviso para usar fone de ouvido no modo duplo.
+- **Mínimo do app no macOS passa a 14.6** (era 11.0). Motivo: a `cpal` 0.18.2, que faz microfone e som do computador nos dois sistemas, exige macOS 14.2 para abrir e 14.6 para gravar o som do computador. Manter o 11 exigiria escrever à mão a captura em Core Audio. Assim, todas as três fontes ficam sempre disponíveis no Mac (14.6+) e no Windows (8+).
 
 ## Desenho
 
@@ -74,8 +75,8 @@ O motivo é transcrever e resumir reuniões. Saber o que foi dito por você e o 
   - Os blocos entram numa fila e são transcritos um por vez, sem dois Whisper em paralelo. No modo duplo, os blocos das duas fontes se alternam na fila.
   - Se a fila crescer (modelo lento demais para tempo real), a gravação continua e o texto atrasa. Ao parar, a fila é esvaziada antes do resultado, como hoje.
   - Bloco silencioso: o filtro de energia já devolve zero segmentos, sem texto e sem custo de Whisper.
-- **Mac, som do computador.** Process tap global do sistema (todos os processos, saída mixada para mono), dentro de um dispositivo agregado privado, lido por um callback de IO.
-  - O app continua abrindo no macOS 11. As APIs de tap são resolvidas só em tempo de execução, quando o sistema é 14.2+. Como fazer isso (link fraco, `dlsym`, verificação de versão) fica com o construtor.
+- **Mac, som do computador.** Usa o loopback da `cpal` 0.18.2: um stream de entrada aberto sobre o dispositivo de saída padrão. Por baixo, ela cria um process tap (Core Audio) e um dispositivo agregado privado.
+  - O tap da `cpal` é ligado a um dispositivo de saída. Por isso, seguir a troca de saída significa reabrir o stream no novo dispositivo.
   - `Info.plist` ganha `NSAudioCaptureUsageDescription` em pt-BR.
   - Na primeira captura, o macOS pede permissão. Se for negada, a mensagem explica onde liberar.
 - **Mac, microfone.** `cpal` sobre o dispositivo escolhido. A permissão de microfone já está declarada no `Info.plist`.
@@ -92,8 +93,6 @@ O motivo é transcrever e resumir reuniões. Saber o que foi dito por você e o 
 
 - `list_audio_inputs() -> [{ id, name, is_default }]`
   - `id` é um identificador estável entre execuções (o nome ou o UID do dispositivo).
-- `capture_capabilities() -> { system_audio: bool, reason: Option<String> }`
-  - `system_audio` é falso no macOS anterior a 14.2, com o motivo em pt-BR.
 - `start_recording({ source: "mic" | "system" | "both", mic_id: Option<String>, model, language })`
   - Ocupa o mesmo espaço de tarefa da transcrição de arquivo: bloqueia apagar e importar modelos, como hoje.
 - `stop_recording() -> Transcript`
@@ -144,7 +143,6 @@ Reunião: Oi, tudo bem? Eu trouxe os números.
   - No estado "Finalizando…" (esvaziando a fila), a bolinha para de pulsar e as barras somem.
   - O cabeçalho do app, que já mostra o trabalho em andamento, diz "Gravando…" enquanto a gravação estiver ativa.
   - Com "reduzir movimento" ativado no sistema (`prefers-reduced-motion`), a bolinha fica acesa, sem pulsar.
-- Sem suporte a som do computador, as duas opções aparecem desativadas, com o motivo em texto pequeno.
 - A lista de microfones é carregada ao abrir a aba. Um botão ↻ recarrega a lista.
 - A fonte e o microfone escolhidos ficam salvos em `Settings`:
   - campos novos `record_source` e `record_mic_id`, com leitura tolerante igual à do `summary_provider`;
@@ -160,7 +158,6 @@ Reunião: Oi, tudo bem? Eu trouxe os números.
   - intercalação e etiquetas: ordem por tempo, empate, segmentos seguidos da mesma fonte;
   - texto, SRT e TXT com etiquetas;
   - leitura tolerante dos campos novos de `Settings`;
-  - `capture_capabilities` por versão do macOS, numa função pura que recebe a versão;
   - a fila não roda dois Whisper ao mesmo tempo.
 - **Manuais:**
   - Mac: escolher um microfone que não seja o padrão;
@@ -169,12 +166,9 @@ Reunião: Oi, tudo bem? Eu trouxe os números.
   - Mac: pedido de permissão e negação;
   - Windows: os mesmos casos;
   - desconectar o fone no meio da gravação;
-  - macOS anterior a 14.2: opções desativadas, se houver uma máquina disponível.
 
 ## O que fica com o construtor
 
-- A crate e a forma de chamar o Core Audio tap. Exemplos: `objc2-core-audio`, ou o suporte de loopback que versões recentes do `cpal` podem ter no macOS; verificar antes de escrever bindings próprios.
-- Como o app abre no macOS 11 sem as APIs de tap.
 - A biblioteca ou o algoritmo de reamostragem.
 - O formato exato de `id` do microfone.
 - A estrutura interna dos módulos, seguindo a organização atual (`src-tauri/src/`, um assunto por arquivo).

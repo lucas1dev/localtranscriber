@@ -10,7 +10,7 @@ export function mountHeader(root, store) {
   const jobBadge = h('span', { class: 'job-badge', hidden: true });
   const gear = h('button', {
     class: 'icon-btn', type: 'button', 'aria-label': 'Configurações', title: 'Configurações', text: '⚙',
-    onClick: () => store.set(openSettings(store.get())),
+    onClick: () => store.set(openSettings(store.get(), store.get().settingsSection)),
   });
   root.append(h('div', { class: 'header-inner' }, title, nav, jobBadge, gear));
 

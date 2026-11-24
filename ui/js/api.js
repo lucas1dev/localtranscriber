@@ -32,6 +32,8 @@ export const api = {
   summarize: (req) => invoke('summarize', { req }),
   compare: (req) => invoke('compare', { req }),
 
+  openUrl: (url) => window.__TAURI__.opener.openUrl(url),
+
   pickAudioFile: () => window.__TAURI__.dialog.open({
     multiple: false,
     directory: false,

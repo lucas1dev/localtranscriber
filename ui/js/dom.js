@@ -13,3 +13,9 @@ export function h(tag, props = {}, ...children) {
   }
   return node;
 }
+
+// Mostra uma mensagem num elemento (vazio esconde o elemento).
+export function showText(el, message) {
+  el.textContent = message || '';
+  el.hidden = !message;
+}

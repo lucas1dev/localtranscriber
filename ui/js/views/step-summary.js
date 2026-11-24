@@ -29,7 +29,7 @@ export function mountStepSummary(root, store) {
 
   // --- elementos ---
   const providerSel = h('select', { id: 'prov-sel', onChange: () => { ui.provider = providerSel.value; ui.model = ''; modelInput.value = ''; render(store.get()); } });
-  const configLink = h('button', { class: 'link', type: 'button', text: 'configurar', onClick: () => store.set(openSettings(store.get())) });
+  const configLink = h('button', { class: 'link', type: 'button', text: 'configurar', onClick: () => store.set(openSettings(store.get(), 'accounts')) });
   const styleSel = h('select', { id: 'style-sel', onChange: () => { ui.style = styleSel.value; render(store.get()); } },
     STYLES.map(([v, l]) => h('option', { value: v, text: l })));
   const modelInput = h('input', { id: 'model-in', type: 'text', onInput: () => { ui.model = modelInput.value; } });

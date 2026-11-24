@@ -3,6 +3,7 @@
 
 export const initialState = {
   view: 'steps',
+  settingsSection: 'transcription',
   step: 1,
   maxStep: 1,
   transcript: null,
@@ -17,8 +18,8 @@ export function goTo(state, step) {
   return {};
 }
 
-export function openSettings(state) {
-  return { view: 'settings' };
+export function openSettings(state, section = 'transcription') {
+  return { view: 'settings', settingsSection: section };
 }
 
 export function closeSettings(state) {

@@ -15,7 +15,7 @@ test('colar texto vai ao passo 2', () => assert.equal(pasteText(initialState, 'a
 
 test('openSettings e closeSettings mudam só view', () => {
   const s = {...initialState, step:2, maxStep:2, job:{kind:'summary', percent:null}};
-  assert.deepEqual(openSettings(s), {view:'settings'});
+  assert.deepEqual(openSettings(s), {view:'settings', settingsSection:'transcription'});
   assert.deepEqual(closeSettings({...s, view:'settings'}), {view:'steps'});
 });
 
@@ -31,4 +31,11 @@ test('startJob libera quando não há job', () => {
 test('goTo avança para passo já alcançado diferente do atual', () => {
   assert.deepEqual(goTo({...initialState, step:2, maxStep:2}, 1), {step:1, error:null});
   assert.deepEqual(goTo({...initialState, step:1, maxStep:2}, 1), {});
+});
+
+test('openSettings com seção preserva o resto e define settingsSection', () => {
+  const s = {...initialState, step:2, maxStep:2, job:{kind:'summary', percent:null}};
+  assert.deepEqual(openSettings(s, 'accounts'), {view:'settings', settingsSection:'accounts'});
+  assert.deepEqual(openSettings(s), {view:'settings', settingsSection:'transcription'});
+  assert.equal(initialState.settingsSection, 'transcription');
 });

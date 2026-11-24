@@ -6,7 +6,7 @@ import {
 } from '../flow.js';
 import { createMic } from '../mic.js';
 
-const LANGUAGES = [
+export const LANGUAGES = [
   ['auto', 'Detectar automaticamente'], ['pt', 'Português'], ['en', 'Inglês'],
   ['es', 'Espanhol'], ['fr', 'Francês'], ['de', 'Alemão'],
 ];
@@ -28,7 +28,7 @@ export function mountStepAudio(root, store) {
   // --- elementos ---
   const noModelWarn = h('div', { class: 'notice' },
     h('span', { text: 'Nenhum modelo instalado. Baixe um modelo para transcrever.' }),
-    h('button', { class: 'btn', type: 'button', text: 'Abrir Configurações', onClick: () => store.set(openSettings(store.get())) }));
+    h('button', { class: 'btn', type: 'button', text: 'Abrir Configurações', onClick: () => store.set(openSettings(store.get(), 'transcription')) }));
 
   const tabFile = h('button', { class: 'tab', type: 'button', text: 'Arquivo', onClick: () => setTab('file') });
   const tabMic = h('button', { class: 'tab', type: 'button', text: 'Microfone', onClick: () => setTab('mic') });
@@ -46,7 +46,7 @@ export function mountStepAudio(root, store) {
   const modelSel = h('select', { id: 'model-sel', onChange: () => { ui.model = modelSel.value; render(); } });
   const langSel = h('select', { id: 'lang-sel', onChange: () => { ui.language = langSel.value; } },
     LANGUAGES.map(([v, l]) => h('option', { value: v, text: l })));
-  const getModels = h('button', { class: 'link', type: 'button', text: 'Baixar modelos', onClick: () => store.set(openSettings(store.get())) });
+  const getModels = h('button', { class: 'link', type: 'button', text: 'Baixar modelos', onClick: () => store.set(openSettings(store.get(), 'transcription')) });
   const options = h('div', { class: 'options' },
     h('label', { for: 'model-sel', text: 'Modelo' }), modelSel, getModels,
     h('label', { for: 'lang-sel', text: 'Idioma' }), langSel);

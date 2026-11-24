@@ -5,6 +5,7 @@ mod models;
 mod paths;
 #[allow(dead_code)]
 mod settings;
+pub mod transcribe;
 
 pub fn run() {
     tauri::Builder::default()

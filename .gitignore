@@ -9,3 +9,4 @@ src-tauri/binaries/*
 !src-tauri/binaries/.gitkeep
 *.part
 .DS_Store
+src-tauri/tests/fixtures/*.wav

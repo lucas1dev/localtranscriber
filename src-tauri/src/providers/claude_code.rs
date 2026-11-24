@@ -208,7 +208,7 @@ mod tests {
     fn claude_locate_finds_in_local_bin() {
         let tmp = tempfile::tempdir().unwrap();
         let local_bin = tmp.path().join(".local").join("bin");
-        let want = make_exe(&local_bin, "claude");
+        let want = make_exe(&local_bin, if cfg!(windows) { "claude.exe" } else { "claude" });
         let found = locate_in(&[local_bin], Some("".into())).expect("deveria achar o claude");
         assert_eq!(found.bin, want);
     }

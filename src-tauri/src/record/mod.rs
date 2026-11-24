@@ -1,7 +1,8 @@
-// Lógica pura da gravação (sem dispositivos). Task 4 liga isto à captura nativa;
-// até lá, parte do código só é usada nos testes.
+// Gravação: lógica pura (reamostragem, relógio, etiquetas) e dispositivos cpal.
+// Task 4 liga tudo à sessão; até lá, parte do código só é usada nos testes.
 #![allow(dead_code)]
 
+pub mod devices;
 pub mod merge;
 pub mod resample;
 pub mod track;

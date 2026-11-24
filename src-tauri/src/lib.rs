@@ -9,6 +9,8 @@ mod paths;
 #[allow(dead_code)]
 pub mod providers;
 #[allow(dead_code)]
+pub mod summarize;
+#[allow(dead_code)]
 mod settings;
 #[allow(dead_code)]
 mod state;

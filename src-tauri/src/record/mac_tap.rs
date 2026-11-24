@@ -315,6 +315,7 @@ unsafe extern "C-unwind" fn io_proc(
     let count = (*list).mNumberBuffers as usize;
     let first = std::ptr::addr_of!((*list).mBuffers).cast::<AudioBuffer>();
     let buffers = std::slice::from_raw_parts(first, count);
+    // `read_buffers` copia para um `Vec` pequeno por chamada: aceito; nada aqui bloqueia.
     if let Some((samples, channels)) = read_buffers(buffers) {
         ctx.sink.push(Raw {
             samples,

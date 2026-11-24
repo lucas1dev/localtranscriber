@@ -2,13 +2,15 @@
 // do computador em mono 16 kHz. O som do computador usa o process tap global do
 // Core Audio no Mac (`mac_tap`) e o loopback WASAPI da cpal no Windows.
 //
-// O callback de áudio só converte as amostras para f32 e faz `try_send` para a
-// thread de conversão do `OpenSource`; se a fila estiver cheia, descarta e conta.
+// O callback de áudio só converte as amostras para f32 (um `Vec` pequeno por
+// callback) e faz `try_send` para a thread de conversão do `OpenSource`; se a fila
+// estiver cheia, descarta e conta. A thread de conversão consulta a fila sem
+// esperar nela, para o `try_send` nunca ter de acordar ninguém.
 // A reamostragem (que pode entrar em pânico) roda nessa thread, nunca no callback.
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::str::FromStr;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering};
-use std::sync::mpsc::{self, Receiver, RecvTimeoutError, SyncSender, TrySendError};
+use std::sync::mpsc::{self, Receiver, SyncSender, TryRecvError, TrySendError};
 use std::sync::Arc;
 use std::thread::JoinHandle;
 use std::time::Duration;
@@ -23,7 +25,9 @@ use crate::error::AppError;
 /// Pacotes brutos na fila entre o callback e a thread de conversão
 /// (callbacks de 3 a 10 ms: de 3 a 10 s de folga).
 const RAW_QUEUE: usize = 1024;
-/// Intervalo em que a thread de conversão confere falhas e parada.
+/// Intervalo entre as consultas da thread de conversão à fila bruta.
+const WORKER_POLL: Duration = Duration::from_millis(5);
+/// Parando, a thread de conversão termina depois de tanto tempo sem pacotes.
 const WORKER_TICK: Duration = Duration::from_millis(50);
 /// Espera entre tentativas quando o canal de saída está cheio.
 const DELIVER_RETRY: Duration = Duration::from_millis(5);
@@ -309,6 +313,7 @@ where
     device.build_input_stream::<T, _, _>(
         config,
         move |data: &[T], _: &cpal::InputCallbackInfo| {
+            // Um `Vec` pequeno por callback (alguns KB): aceito; o resto não bloqueia.
             sink.push(Raw {
                 samples: to_f32(data),
                 rate,
@@ -344,49 +349,55 @@ struct Worker {
 }
 
 impl Worker {
+    /// Consulta a fila bruta com `try_recv` e dorme `WORKER_POLL` entre as voltas.
+    /// Nunca espera bloqueada na fila: com o receptor estacionado, o `try_send`
+    /// do callback de tempo real teria de pegar uma trava e acordá-lo.
     fn run(mut self) {
+        let mut idle = Duration::ZERO;
         loop {
-            match self.raw_rx.recv_timeout(WORKER_TICK) {
-                Ok(first) => {
-                    let mut out = Vec::new();
-                    let mut result = self.convert(first, &mut out);
-                    while result.is_ok() {
-                        match self.raw_rx.try_recv() {
-                            Ok(more) => result = self.convert(more, &mut out),
-                            Err(_) => break,
-                        }
+            let mut out = Vec::new();
+            let mut result = Ok(());
+            let mut received = false;
+            let mut closed = false;
+            while result.is_ok() {
+                match self.raw_rx.try_recv() {
+                    Ok(raw) => {
+                        received = true;
+                        result = self.convert(raw, &mut out);
                     }
-                    if !out.is_empty() && !self.deliver(SourceMsg::Pcm(out)) {
-                        return;
-                    }
-                    if result.is_err() {
-                        self.fail(Fault::Other);
-                    }
-                }
-                Err(RecvTimeoutError::Timeout) => {
-                    if self.stopping.load(Ordering::Relaxed) {
+                    Err(TryRecvError::Empty) => break,
+                    Err(TryRecvError::Disconnected) => {
+                        closed = true;
                         break;
                     }
-                }
-                Err(RecvTimeoutError::Disconnected) => {
-                    if self.stopping.load(Ordering::Relaxed) {
-                        break;
-                    }
-                    // A captura soltou a fila sem a gravação ter parado: no WASAPI
-                    // a cpal avisa o erro e encerra a thread dela. Sem `Failed`, a
-                    // sessão completaria esta fonte com silêncio para sempre.
-                    let fault = Fault::from_code(self.fault.load(Ordering::Relaxed))
-                        .unwrap_or(Fault::Other);
-                    self.flush();
-                    self.deliver(SourceMsg::Failed(fault.message(self.kind)));
-                    return;
                 }
             }
-            if let Some(fault) = Fault::from_code(self.fault.load(Ordering::Relaxed)) {
+            if !out.is_empty() && !self.deliver(SourceMsg::Pcm(out)) {
+                return;
+            }
+            if result.is_err() {
+                self.fail(Fault::Other);
+            }
+            let stopping = self.stopping.load(Ordering::Relaxed);
+            // A captura soltou a fila sem a gravação ter parado: no WASAPI a cpal
+            // avisa o erro e encerra a thread dela. Sem `Failed`, a sessão
+            // completaria esta fonte com silêncio para sempre.
+            let fault = Fault::from_code(self.fault.load(Ordering::Relaxed))
+                .or((closed && !stopping).then_some(Fault::Other));
+            if let Some(fault) = fault {
                 self.flush();
                 self.deliver(SourceMsg::Failed(fault.message(self.kind)));
                 return;
             }
+            if closed {
+                break;
+            }
+            // Parando: termina quando a fila fecha ou fica `WORKER_TICK` sem nada.
+            idle = if received { Duration::ZERO } else { idle + WORKER_POLL };
+            if stopping && idle >= WORKER_TICK {
+                break;
+            }
+            std::thread::sleep(WORKER_POLL);
         }
         self.flush();
     }
@@ -703,6 +714,30 @@ mod tests {
         w.run();
         let msgs: Vec<SourceMsg> = rx.try_iter().collect();
         assert_eq!(msgs, [SourceMsg::Failed("A captura do microfone falhou.".into())]);
+    }
+
+    #[test]
+    fn stopping_ends_worker_once_the_queue_goes_quiet() {
+        // O stream ainda não soltou a fila, mas a gravação parou e nada mais chega:
+        // a thread termina sozinha e entrega o que já tinha.
+        let (raw_tx, raw_rx) = mpsc::sync_channel(1024);
+        let (tx, rx) = mpsc::sync_channel(1024);
+        let (w, _) = worker(raw_rx, tx, SourceKind::System, true);
+        for p in packets(48_000, 1, 1) {
+            raw_tx.send(p).unwrap();
+        }
+        let started = std::time::Instant::now();
+        w.run();
+        assert!(started.elapsed() < Duration::from_secs(2));
+        let total: usize = rx
+            .try_iter()
+            .map(|m| match m {
+                SourceMsg::Pcm(p) => p.len(),
+                SourceMsg::Failed(e) => panic!("falha inesperada: {e}"),
+            })
+            .sum();
+        assert!((total as i64 - 16_000).abs() <= 2, "total {total}");
+        drop(raw_tx);
     }
 
     #[test]

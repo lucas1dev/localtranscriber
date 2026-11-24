@@ -137,15 +137,18 @@ pub struct Session {
 }
 
 impl Session {
-    /// Começa a coletar das fontes já abertas. Com duas fontes, a primeira ganha os
+    /// Começa a coletar das fontes já abertas. `start` é o zero do relógio comum:
+    /// o instante de antes de abrir a primeira fonte, para o áudio que ela já
+    /// guardou enquanto as outras abriam contar a partir do zero, e as que abriram
+    /// depois serem completadas com silêncio. Com duas fontes, a primeira ganha os
     /// empates de tempo no texto (Você antes de Reunião).
     pub fn new(
         sources: Vec<SourceSpec>,
         transcriber: Transcriber,
         sink: Sink,
         env: Env,
+        start: Instant,
     ) -> Result<Session, AppError> {
-        let start = (env.now)();
         let speakers: Vec<Option<&'static str>> = sources.iter().map(|s| s.speaker).collect();
         let shared = Arc::new(Shared { sink, failed: AtomicBool::new(false) });
         let (stop_tx, stop_rx) = mpsc::channel();
@@ -485,6 +488,8 @@ mod tests {
     use std::sync::Mutex;
     use std::time::Duration;
 
+    use crate::transcribe::format_ts;
+
     const MIC_GONE: &str = "O microfone foi desconectado.";
     const WAIT: Duration = Duration::from_secs(5);
     const SECOND: usize = 16_000;
@@ -500,15 +505,16 @@ mod tests {
         fn new() -> Self {
             Self { base: Instant::now(), ms: Arc::new(AtomicU64::new(0)) }
         }
+        fn now(&self) -> Instant {
+            self.base + Duration::from_millis(self.ms.load(Ordering::SeqCst))
+        }
         fn advance(&self, secs: f64) {
             self.ms.fetch_add((secs * 1000.0).round() as u64, Ordering::SeqCst);
         }
         fn env(&self, output: Arc<Mutex<Option<String>>>) -> Env {
             let clock = self.clone();
             Env {
-                now: Arc::new(move || {
-                    clock.base + Duration::from_millis(clock.ms.load(Ordering::SeqCst))
-                }),
+                now: Arc::new(move || clock.now()),
                 default_output: Arc::new(move || output.lock().unwrap().clone()),
             }
         }
@@ -619,6 +625,7 @@ mod tests {
             fake_transcriber(),
             sink,
             clock.plain_env(),
+            clock.now(),
         )
         .unwrap();
         feed(&tx, &clock, 25);
@@ -642,6 +649,7 @@ mod tests {
             fake_transcriber(),
             sink,
             clock.plain_env(),
+            clock.now(),
         )
         .unwrap();
         for _ in 0..25 {
@@ -687,6 +695,7 @@ mod tests {
             fake_transcriber(),
             sink,
             clock.plain_env(),
+            clock.now(),
         )
         .unwrap();
         feed(&mic_tx, &clock, 25);
@@ -725,6 +734,7 @@ mod tests {
             transcriber,
             sink,
             clock.plain_env(),
+            clock.now(),
         )
         .unwrap();
         // 60 s de cada fonte de uma vez: 5 + 5 blocos na fila.
@@ -748,6 +758,7 @@ mod tests {
             fake_transcriber(),
             sink,
             clock.plain_env(),
+            clock.now(),
         )
         .unwrap();
         feed(&tx, &clock, 12);
@@ -795,6 +806,7 @@ mod tests {
             fake_transcriber(),
             sink,
             clock.env(output.clone()),
+            clock.now(),
         )
         .unwrap();
         feed(&old_tx, &clock, 6);
@@ -819,6 +831,7 @@ mod tests {
             fake_transcriber(),
             sink,
             clock.plain_env(),
+            clock.now(),
         )
         .unwrap();
         feed(&old_tx, &clock, 12);
@@ -849,6 +862,7 @@ mod tests {
             fake_transcriber(),
             sink,
             clock.plain_env(),
+            clock.now(),
         )
         .unwrap();
         feed(&tx, &clock, 12);
@@ -899,6 +913,7 @@ mod tests {
             fake_transcriber(),
             sink,
             clock.plain_env(),
+            clock.now(),
         )
         .unwrap();
         feed(&tx, &clock, 12);
@@ -923,6 +938,7 @@ mod tests {
             fake_transcriber(),
             sink,
             clock.plain_env(),
+            clock.now(),
         )
         .unwrap();
         tx.send(SourceMsg::Failed(FAILED.into())).unwrap();
@@ -963,6 +979,166 @@ mod tests {
     }
 
     #[test]
+    fn audio_queued_while_other_source_opens_keeps_the_clock() {
+        // O microfone abre primeiro e grava 1 s enquanto o som do computador abre.
+        // O zero do relógio é antes de abrir o microfone: Você começa em 0 s e
+        // Reunião (que só existe a partir de 1 s) é completada com silêncio.
+        let clock = FakeClock::new();
+        let start = clock.now();
+        let (mic_tx, mic, _) = fake_source(None);
+        mic_tx.send(second(0.1)).unwrap();
+        clock.advance(1.0);
+        let (sys_tx, sys, _) = fake_source(None);
+        let (sink, _events) = sink();
+        // Segmento no primeiro instante com som do bloco.
+        let transcriber: Transcriber = Arc::new(|pcm: &[f32]| {
+            Ok(match pcm.iter().position(|s| *s != 0.0) {
+                Some(i) => vec![seg(&format_ts(i as i64 / 160), "x".into())],
+                None => Vec::new(),
+            })
+        });
+        let session = Session::new(
+            vec![
+                spec(SourceKind::Mic, Some("voce"), mic, no_reopen()),
+                spec(SourceKind::System, Some("reuniao"), sys, no_reopen()),
+            ],
+            transcriber,
+            sink,
+            clock.plain_env(),
+            start,
+        )
+        .unwrap();
+        for _ in 0..12 {
+            mic_tx.send(second(0.1)).unwrap();
+            clock.advance(1.0);
+            // O bloco do sistema chega no fim do segundo que ele cobre.
+            sys_tx.send(second(0.2)).unwrap();
+        }
+        let out = session.stop().unwrap();
+        assert_eq!(starts(&out.segments, Some("voce"))[0], "00:00:00,000");
+        let reuniao = &starts(&out.segments, Some("reuniao"))[0];
+        assert!(
+            ("00:00:01,000".."00:00:02,000").contains(&reuniao.as_str()),
+            "{reuniao}"
+        );
+    }
+
+    /// Transcritor fake que faz `on(n)` na chamada `n` (só blocos com som).
+    fn scripted_transcriber(
+        on: impl Fn(usize) -> Result<Vec<Segment>, AppError> + Send + Sync + 'static,
+    ) -> Transcriber {
+        let calls = AtomicUsize::new(0);
+        Arc::new(move |pcm: &[f32]| {
+            if pcm.iter().all(|s| *s == 0.0) {
+                return Ok(Vec::new());
+            }
+            on(calls.fetch_add(1, Ordering::SeqCst))
+        })
+    }
+
+    fn b(n: usize) -> Result<Vec<Segment>, AppError> {
+        Ok(vec![seg("00:00:01,000", format!("b{n}"))])
+    }
+
+    /// Grava 36 s (três blocos) de uma fonte e devolve o resultado e os eventos.
+    /// Com `ends_alone`, antes de `stop` exige que a sessão solte a captura sozinha.
+    fn record_36s(transcriber: Transcriber, ends_alone: bool) -> (Result<Recorded, AppError>, Vec<SessionEvent>) {
+        let clock = FakeClock::new();
+        let (tx, opened, dropped) = fake_source(None);
+        let (sink, events) = sink();
+        let session = Session::new(
+            vec![spec(SourceKind::Mic, None, opened, no_reopen())],
+            transcriber,
+            sink,
+            clock.plain_env(),
+            clock.now(),
+        )
+        .unwrap();
+        feed(&tx, &clock, 36);
+        if ends_alone {
+            let deadline = Instant::now() + WAIT;
+            while !dropped.load(Ordering::SeqCst) {
+                assert!(Instant::now() < deadline, "a sessão não encerrou sozinha");
+                std::thread::sleep(Duration::from_millis(10));
+            }
+        }
+        let out = session.stop();
+        // `stop` juntou as duas threads: todos os eventos já chegaram.
+        (out, events.try_iter().collect())
+    }
+
+    fn errors(events: &[SessionEvent]) -> Vec<&SessionEvent> {
+        events.iter().filter(|e| matches!(e, SessionEvent::Error { .. })).collect()
+    }
+
+    #[test]
+    fn transcriber_error_ends_with_one_error_and_partial_result() {
+        let (out, events) = record_36s(
+            scripted_transcriber(|n| match n {
+                0 => b(0),
+                _ => Err(AppError::User("Não foi possível carregar o modelo.".into())),
+            }),
+            true,
+        );
+        assert_eq!(
+            errors(&events),
+            [&SessionEvent::Error { message: "Não foi possível carregar o modelo.".into() }]
+        );
+        assert_eq!(out.unwrap().text, "b0");
+    }
+
+    #[test]
+    fn transcriber_panic_ends_with_error_and_partial_result() {
+        let (out, events) = record_36s(
+            scripted_transcriber(|n| match n {
+                0 => b(0),
+                _ => panic!("whisper quebrou"),
+            }),
+            true,
+        );
+        assert_eq!(errors(&events), [&SessionEvent::Error { message: "Falha na transcrição.".into() }]);
+        assert_eq!(out.unwrap().text, "b0");
+    }
+
+    #[test]
+    fn cancelled_chunks_are_skipped_without_error() {
+        let (out, events) = record_36s(
+            scripted_transcriber(|n| match n {
+                1 => Err(AppError::Cancelled),
+                n => b(n),
+            }),
+            false,
+        );
+        assert!(errors(&events).is_empty());
+        assert_eq!(out.unwrap().text, "b0 b2");
+    }
+
+    #[test]
+    fn collector_panic_is_an_internal_error() {
+        let clock = FakeClock::new();
+        let (_tx, opened, dropped) = fake_source(None);
+        // O nível é emitido pela thread de coleta: um sink que entra em pânico ali a derruba.
+        let sink: Sink = Arc::new(|e| {
+            if matches!(e, SessionEvent::Level { .. }) {
+                panic!("sink quebrou");
+            }
+        });
+        let session = Session::new(
+            vec![spec(SourceKind::Mic, None, opened, no_reopen())],
+            fake_transcriber(),
+            sink,
+            clock.plain_env(),
+            clock.now(),
+        )
+        .unwrap();
+        match session.stop() {
+            Err(AppError::Internal(m)) => assert_eq!(m, "A captura da gravação falhou."),
+            other => panic!("esperava Internal, veio {other:?}"),
+        }
+        assert!(dropped.load(Ordering::SeqCst));
+    }
+
+    #[test]
     fn long_blocks_on_time_are_not_padded() {
         // Blocos de 300 ms (como o tap do Core Audio) chegam no fim do trecho que cobrem.
         // Entre o relógio andar e o bloco chegar a fonte parece 300 ms atrasada; com a
@@ -985,6 +1161,7 @@ mod tests {
             transcriber,
             sink,
             clock.plain_env(),
+            clock.now(),
         )
         .unwrap();
         let tick = || {
@@ -1014,6 +1191,7 @@ mod tests {
             fake_transcriber(),
             sink,
             clock.plain_env(),
+            clock.now(),
         )
         .unwrap();
         feed(&tx, &clock, 1);

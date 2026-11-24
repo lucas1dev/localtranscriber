@@ -1,8 +1,8 @@
 // Gravação nativa: lista microfones, começa e para a sessão de `record::session`.
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use serde_json::{json, Value};
 use tauri::{AppHandle, Emitter, State};
@@ -123,6 +123,10 @@ fn begin(
             .ok_or_else(|| AppError::User("Nenhum microfone encontrado.".into()))?;
         Some(chosen.id.clone())
     };
+    // Zero do relógio comum antes de abrir a primeira fonte: o que ela grava
+    // enquanto a outra abre conta do zero, e a outra é completada com silêncio.
+    let env = Env::system();
+    let start = (env.now)();
     let mut specs = Vec::new();
     let mut mic_name = String::new();
     for &(kind, speaker) in mode.sources() {
@@ -153,7 +157,7 @@ fn begin(
             Box::new(|_| {}),
         )
     });
-    let session = Session::new(specs, transcriber, sink, Env::system())?;
+    let session = Session::new(specs, transcriber, sink, env, start)?;
     Ok((session, mode.source_name(&mic_name)))
 }
 
@@ -180,14 +184,18 @@ fn remember_choice(current: &Settings, source: &str, mic_id: Option<&str>) -> Se
     next
 }
 
-fn save_choice(state: &AppState, source: &str, mic_id: Option<&str>) {
-    let mut current = state.settings.lock().unwrap_or_else(|e| e.into_inner());
+/// Salva a fonte escolhida; a memória só muda depois que o arquivo foi gravado.
+fn save_choice(
+    settings: &Mutex<Settings>,
+    file: &Path,
+    source: &str,
+    mic_id: Option<&str>,
+) -> Result<(), AppError> {
+    let mut current = settings.lock().unwrap_or_else(|e| e.into_inner());
     let next = remember_choice(&current, source, mic_id);
-    // Não salvar a preferência não impede de gravar.
-    match settings::save(&state.paths.settings_file, &next) {
-        Ok(()) => *current = next,
-        Err(e) => eprintln!("gravação: não foi possível salvar a fonte escolhida: {e}"),
-    }
+    settings::save(file, &next)?;
+    *current = next;
+    Ok(())
 }
 
 #[tauri::command]
@@ -211,7 +219,7 @@ pub async fn start_recording(
     let model_path = validate_request(&state.paths.models_dir, &model, &language)?;
     // Erro daqui em diante solta `slot` e libera o espaço.
     let slot = claim_slot(&state.transcription_cancel)?;
-    save_choice(&state, &source, mic_id.as_deref());
+    save_choice(&state.settings, &state.paths.settings_file, &source, mic_id.as_deref())?;
 
     let engine = Arc::clone(&state.engine);
     let cancel = slot.cancel();
@@ -313,6 +321,62 @@ mod tests {
         assert_eq!((s.record_source.as_str(), s.record_mic_id.as_deref()), ("both", Some("m2")));
         let s = remember_choice(&current, "mic", None);
         assert_eq!(s.record_mic_id, None);
+    }
+
+    #[test]
+    fn save_choice_updates_memory_only_after_saving() {
+        let dir = tempfile::tempdir().unwrap();
+        let settings = Mutex::new(Settings::default());
+        let file = dir.path().join("settings.json");
+        save_choice(&settings, &file, "both", Some("m1")).unwrap();
+        assert_eq!(settings.lock().unwrap().record_source, "both");
+        assert_eq!(crate::settings::load(&file).record_mic_id.as_deref(), Some("m1"));
+
+        // Um diretório no lugar do arquivo: salvar falha, o erro sobe e a memória fica igual.
+        let blocked = dir.path().join("bloqueado");
+        std::fs::create_dir(&blocked).unwrap();
+        assert!(save_choice(&settings, &blocked, "system", None).is_err());
+        assert_eq!(settings.lock().unwrap().record_source, "both");
+    }
+
+    /// Handle com uma sessão sem fontes, ocupando `slot`.
+    fn handle(slot: &CancelSlot) -> RecordingHandle {
+        let session = Session::new(
+            Vec::new(),
+            Arc::new(|_: &[f32]| Ok(Vec::new())),
+            Arc::new(|_| {}),
+            Env::system(),
+            std::time::Instant::now(),
+        )
+        .unwrap();
+        RecordingHandle {
+            session,
+            model: "large-v3-turbo".into(),
+            language: "pt".into(),
+            source_name: "Som do computador".into(),
+            slot: claim_slot(slot).unwrap(),
+        }
+    }
+
+    #[test]
+    fn finish_builds_transcript_and_frees_the_slot() {
+        let slot = CancelSlot::default();
+        let t = handle(&slot).finish().unwrap();
+        assert_eq!(
+            (t.model.as_str(), t.language.as_str(), t.source_name.as_str(), t.text.as_str()),
+            ("large-v3-turbo", "pt", "Som do computador", "")
+        );
+        assert!(slot.lock().unwrap().is_none());
+    }
+
+    #[test]
+    fn finish_after_cancel_returns_cancelled_and_frees_the_slot() {
+        let slot = CancelSlot::default();
+        let h = handle(&slot);
+        // `cancel_transcription` liga a flag guardada no espaço.
+        slot.lock().unwrap().as_ref().unwrap().store(true, Ordering::Relaxed);
+        assert!(matches!(h.finish(), Err(AppError::Cancelled)));
+        assert!(slot.lock().unwrap().is_none());
     }
 
     fn smoke_models_dir() -> PathBuf {

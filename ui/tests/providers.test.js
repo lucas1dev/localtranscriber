@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { configuredProviders, initialProvider, usableProviders } from '../js/providers.js';
+import { configuredProviders, connectedLabel, initialProvider, usableProviders } from '../js/providers.js';
 
 const p = (id, configured, enabled = true, kind = 'api_key') => ({ id, label: id, kind, configured, enabled, detail: '' });
 
@@ -25,4 +25,12 @@ test('initialProvider: salvo não configurado cai no primeiro configurado', () =
 
 test('initialProvider: nenhum configurado dá null', () => {
   assert.equal(initialProvider([p('openai', false)], 'openai'), null);
+});
+
+test('connectedLabel não repete "conectado"', () => {
+  assert.equal(connectedLabel('p@x.com'), 'Conectado: p@x.com');
+  assert.equal(connectedLabel('conectado'), 'Conectado');
+  assert.equal(connectedLabel('Conectado'), 'Conectado');
+  assert.equal(connectedLabel(''), 'Conectado');
+  assert.equal(connectedLabel(null), 'Conectado');
 });

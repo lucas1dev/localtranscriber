@@ -12,3 +12,10 @@ export function initialProvider(list, saved) {
   const ids = configuredProviders(list).map((p) => p.id);
   return ids.includes(saved) ? saved : (ids[0] ?? null);
 }
+
+// Texto de uma conta conectada: "Conectado: p@x.com", ou só "Conectado" quando o
+// detalhe é vazio ou já diz "conectado".
+export function connectedLabel(detail) {
+  const d = (detail ?? '').trim();
+  return d && d.toLowerCase() !== 'conectado' ? `Conectado: ${d}` : 'Conectado';
+}

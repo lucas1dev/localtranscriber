@@ -1,6 +1,7 @@
 // Configurações › Contas de IA — assinatura, chave de API e local.
 import { api, errorMessage } from '../api.js';
 import { h, showText } from '../dom.js';
+import { connectedLabel } from '../providers.js';
 
 const API_KEY_PROVIDERS = ['openai', 'anthropic', 'gemini'];
 const keychainName = () => (navigator.userAgent.includes('Windows')
@@ -110,14 +111,14 @@ export function mountSettingsAccounts(root, store) {
     const claude = byId('claude_code');
     if (codex) {
       const missing = !codex.configured && codex.detail.startsWith('Codex embutido');
-      codexState.textContent = codex.configured ? `Conectado: ${codex.detail}` : codex.detail;
+      codexState.textContent = codex.configured ? connectedLabel(codex.detail) : codex.detail;
       codexLoginBtn.hidden = codex.configured;
       codexLoginBtn.disabled = ui.loggingIn || missing;
       codexLogoutBtn.hidden = !codex.configured;
     }
     codexWait.hidden = !ui.loggingIn;
     if (claude) {
-      claudeState.textContent = claude.configured ? `Conectado: ${claude.detail}` : claude.detail;
+      claudeState.textContent = claude.configured ? connectedLabel(claude.detail) : claude.detail;
       claudeToggle.checked = claude.enabled;
     }
     for (const id of API_KEY_PROVIDERS) {

@@ -21,6 +21,16 @@ pub const CATALOG: [ModelInfo; 4] = [
 pub const HF_BASE: &str = "https://huggingface.co/ggerganov/whisper.cpp/resolve/main";
 
 const PROGRESS_INTERVAL: Duration = Duration::from_millis(250);
+const STALLED: &str = "O download parou de responder. Verifique a conexão e tente de novo.";
+
+/// Erro de rede do download; tempo esgotado vira mensagem para a pessoa.
+fn network_error(e: reqwest::Error) -> AppError {
+    if e.is_timeout() {
+        AppError::User(STALLED.into())
+    } else {
+        e.into()
+    }
+}
 
 pub fn file_name(id: &str) -> String {
     format!("ggml-{id}.bin")
@@ -96,8 +106,9 @@ async fn fetch_to_part(
         return Err(AppError::Cancelled);
     }
     let mut resp = tokio::select! {
+        biased;
         _ = cancel.cancelled() => return Err(AppError::Cancelled),
-        r = http.get(url).send() => r?,
+        r = http.get(url).send() => r.map_err(network_error)?,
     };
     if !resp.status().is_success() {
         return Err(AppError::Internal(format!("Download falhou: HTTP {}", resp.status().as_u16())));
@@ -108,8 +119,9 @@ async fn fetch_to_part(
     let mut last_emit: Option<Instant> = None;
     loop {
         let chunk = tokio::select! {
+            biased;
             _ = cancel.cancelled() => return Err(AppError::Cancelled),
-            c = resp.chunk() => c?,
+            c = resp.chunk() => c.map_err(network_error)?,
         };
         let Some(chunk) = chunk else { break };
         file.write_all(&chunk).await?;
@@ -342,6 +354,49 @@ mod tests {
         assert!(matches!(r, Err(AppError::Cancelled)));
         assert!(seen.load(Ordering::SeqCst) > 0);
         assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 0);
+    }
+
+    #[tokio::test]
+    async fn stalled_download_times_out_with_user_error() {
+        use tokio::io::AsyncReadExt;
+        // Servidor manual: promete 10_000 bytes, manda 4_000 e fica parado.
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let (mut s, _) = listener.accept().await.unwrap();
+            let mut buf = [0u8; 2048];
+            let _ = s.read(&mut buf).await;
+            s.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 10000\r\n\r\n").await.unwrap();
+            s.write_all(&vec![1u8; 4_000]).await.unwrap();
+            tokio::time::sleep(Duration::from_secs(30)).await;
+        });
+        let dir = tempfile::tempdir().unwrap();
+        let http = crate::state::download_client(Duration::from_millis(300));
+        let started = Instant::now();
+        let r = download(&http, &format!("http://{addr}"), dir.path(), "base", CancellationToken::new(), |_, _| {}).await;
+        assert!(started.elapsed() < Duration::from_secs(10));
+        match r {
+            Err(AppError::User(m)) => assert_eq!(m, STALLED),
+            other => panic!("{other:?}"),
+        }
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 0);
+    }
+
+    #[tokio::test]
+    async fn cancel_always_wins_over_ready_data() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(vec![7u8; 10_000]))
+            .mount(&server)
+            .await;
+        let http = reqwest::Client::new();
+        for _ in 0..30 {
+            let dir = tempfile::tempdir().unwrap();
+            let cancel = CancellationToken::new();
+            let c2 = cancel.clone();
+            let r = download(&http, &server.uri(), dir.path(), "base", cancel, move |_, _| c2.cancel()).await;
+            assert!(matches!(r, Err(AppError::Cancelled)), "{r:?}");
+        }
     }
 
     #[test]

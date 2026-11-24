@@ -91,7 +91,7 @@ pub async fn download_model(
         let progress_app = app.clone();
         let progress_id = id.clone();
         let result = models::download(
-            &state.http,
+            &state.download_http,
             models::HF_BASE,
             &state.paths.models_dir,
             &id,

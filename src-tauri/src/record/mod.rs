@@ -3,6 +3,8 @@
 #![allow(dead_code)]
 
 pub mod devices;
+#[cfg(target_os = "macos")]
+mod mac_tap;
 pub mod merge;
 pub mod resample;
 pub mod track;

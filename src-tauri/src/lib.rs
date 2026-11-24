@@ -1,5 +1,7 @@
 pub mod error;
 #[allow(dead_code)]
+mod models;
+#[allow(dead_code)]
 mod paths;
 #[allow(dead_code)]
 mod settings;

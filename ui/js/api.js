@@ -19,6 +19,7 @@ export const api = {
   listAudioInputs: () => invoke('list_audio_inputs'),
   startRecording: (source, micId, model, language) => invoke('start_recording', { source, micId, model, language }),
   stopRecording: () => invoke('stop_recording'),
+  confirmClose: () => invoke('confirm_close'),
   cancelTranscription: () => invoke('cancel_transcription'),
 
   providersStatus: () => invoke('providers_status'),

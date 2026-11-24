@@ -20,6 +20,11 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .plugin(navigation::guard())
+        .on_window_event(|window, event| {
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                commands::recording::on_close_requested(window, api);
+            }
+        })
         .setup(|app| {
             let data_dir = app.path().app_data_dir()?;
             let paths = paths::AppPaths::from_data_dir(data_dir)?;
@@ -32,6 +37,7 @@ pub fn run() {
             commands::recording::list_audio_inputs,
             commands::recording::start_recording,
             commands::recording::stop_recording,
+            commands::recording::confirm_close,
             commands::app::get_status,
             commands::app::get_settings,
             commands::app::set_settings,

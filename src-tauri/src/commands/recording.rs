@@ -5,7 +5,7 @@ use std::sync::mpsc::{self, Receiver};
 use std::sync::{Arc, Mutex};
 
 use serde_json::{json, Value};
-use tauri::{AppHandle, Emitter, State};
+use tauri::{AppHandle, Emitter, Manager, State};
 
 use crate::commands::transcription::{claim_slot, validate_request, SlotGuard};
 use crate::error::AppError;
@@ -201,6 +201,34 @@ fn save_choice(
     Ok(())
 }
 
+/// Evento para a interface confirmar o fechamento com uma gravação em andamento.
+pub const CLOSE_REQUESTED: &str = "app://close-requested";
+
+/// Segura o fechamento da janela enquanto há gravação, até a pessoa confirmar.
+pub fn block_close(recording: bool, confirmed: bool) -> bool {
+    recording && !confirmed
+}
+
+/// `CloseRequested` da janela: com gravação em andamento e sem confirmação,
+/// impede o fechamento e pede a confirmação à interface.
+pub fn on_close_requested(window: &tauri::Window, api: &tauri::CloseRequestApi) {
+    let state = window.state::<Arc<AppState>>();
+    let recording = state.recording.lock().unwrap_or_else(|e| e.into_inner()).is_some();
+    if block_close(recording, state.close_confirmed.load(Ordering::SeqCst)) {
+        api.prevent_close();
+        let _ = window.emit(CLOSE_REQUESTED, ());
+    }
+}
+
+/// A pessoa confirmou: fecha mesmo com a gravação (que é descartada).
+#[tauri::command]
+pub async fn confirm_close(window: tauri::Window, state: State<'_, Arc<AppState>>) -> Result<(), AppError> {
+    state.close_confirmed.store(true, Ordering::SeqCst);
+    window
+        .close()
+        .map_err(|e| AppError::Internal(format!("Não foi possível fechar a janela: {e}")))
+}
+
 #[tauri::command]
 pub async fn list_audio_inputs() -> Result<Vec<AudioInput>, AppError> {
     tokio::task::spawn_blocking(devices::list_inputs)
@@ -280,6 +308,15 @@ mod tests {
         drop(recording);
         assert!(slot.lock().unwrap().is_none());
         assert!(claim_slot(&slot).is_ok());
+    }
+
+    #[test]
+    fn close_is_blocked_only_while_recording_without_confirmation() {
+        assert!(block_close(true, false));
+        assert!(!block_close(true, true));
+        assert!(!block_close(false, false));
+        assert!(!block_close(false, true));
+        assert_eq!(CLOSE_REQUESTED, "app://close-requested");
     }
 
     #[test]

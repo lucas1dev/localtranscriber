@@ -181,6 +181,7 @@ button:disabled { opacity: 0.35; cursor: not-allowed; }
   background: #2a1517; border: 1px solid #9b5656; border-radius: 10px; font-size: 13px;
 }
 .confirm span { flex: 1; min-width: 200px; }
+.close-guard { width: min(850px, calc(100% - 36px)); margin: 16px auto 0; }
 .btn.danger { background: #5a2226; border-color: #9b5656; color: #ffd9d9; }
 .key-form { display: flex; gap: 8px; flex-wrap: wrap; }
 .key-form input, .pane-section .options input[type=text], .pane-section .options select {

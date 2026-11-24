@@ -4,6 +4,7 @@ import { h } from './dom.js';
 import { initialState } from './flow.js';
 import { initDownloadEvents } from './downloads.js';
 import { createStore } from './store.js';
+import { mountCloseGuard } from './views/close-guard.js';
 import { mountErrorBanner } from './views/error-banner.js';
 import { mountHeader } from './views/header.js';
 import { mountSettings } from './views/settings.js';
@@ -15,6 +16,7 @@ const store = createStore({ ...initialState, settings: null, models: undefined, 
 
 mountHeader(document.getElementById('header'), store);
 mountErrorBanner(document.getElementById('banner'), store);
+mountCloseGuard(document.getElementById('banner'), store);
 
 const main = document.getElementById('main');
 const audio = h('section', { class: 'step' });

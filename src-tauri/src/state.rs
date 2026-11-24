@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -31,6 +32,8 @@ pub struct AppState {
     pub sidecars: Sidecars,
     pub transcription_cancel: CancelSlot,
     pub recording: Mutex<Option<RecordingHandle>>,
+    /// A pessoa confirmou fechar a janela mesmo com uma gravação em andamento.
+    pub close_confirmed: AtomicBool,
     pub downloads: Mutex<HashMap<String, CancellationToken>>,
     pub ollama_pulls: Mutex<HashMap<String, CancellationToken>>,
     pub secrets: Arc<dyn SecretStore>,
@@ -108,6 +111,7 @@ impl AppState {
             sidecars: Sidecars::resolve(),
             transcription_cancel: CancelSlot::default(),
             recording: Mutex::new(None),
+            close_confirmed: AtomicBool::new(false),
             downloads: Mutex::new(HashMap::new()),
             ollama_pulls: Mutex::new(HashMap::new()),
             secrets: Arc::new(KeyringStore),

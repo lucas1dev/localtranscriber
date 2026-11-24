@@ -21,7 +21,9 @@ Rode **antes** de `cargo build`, `cargo test` ou `npm run tauri build` (o
   O FFmpeg é compilado uma vez e fica em cache em `src-tauri/target/ffmpeg-build/`.
   O `verify-sidecars.sh` usa o ffmpeg do sistema (Homebrew ou `HOST_FFMPEG=<caminho>`)
   para gerar mídia de teste; para pular essa parte de propósito, `SKIP_DECODE=1`.
-- Windows: `powershell -ExecutionPolicy Bypass -File scripts\fetch-sidecars.ps1`.
+- Windows: `powershell -ExecutionPolicy Bypass -File scripts\fetch-sidecars.ps1` e depois
+  `powershell -ExecutionPolicy Bypass -File scripts\verify-sidecars.ps1` (versões do lock;
+  falha se o `ffmpeg.exe -version` mostrar `--enable-gpl`, `--enable-nonfree` ou `--enable-version3`).
 
 ## FFmpeg — licença LGPL 2.1 ou posterior
 

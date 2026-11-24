@@ -1,4 +1,8 @@
 pub mod error;
+#[allow(dead_code)]
+mod paths;
+#[allow(dead_code)]
+mod settings;
 
 pub fn run() {
     tauri::Builder::default()

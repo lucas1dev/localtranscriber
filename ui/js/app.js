@@ -22,14 +22,9 @@ main.append(audio, later, settings);
 mountStepAudio(audio, store);
 
 // Placeholders até as Tasks 13 e 14.
-let lastStep = store.get().step;
 store.subscribe((s) => {
   later.hidden = !(s.view === 'steps' && s.step !== 1);
   settings.hidden = s.view !== 'settings';
-  if (s.step !== lastStep) {
-    lastStep = s.step;
-    if (s.error) store.set({ error: null });
-  }
 });
 
 async function load() {

@@ -13,7 +13,7 @@ export const initialState = {
 };
 
 export function goTo(state, step) {
-  if (step <= state.maxStep && step !== state.step) return { step };
+  if (step <= state.maxStep && step !== state.step) return { step, error: null };
   return {};
 }
 

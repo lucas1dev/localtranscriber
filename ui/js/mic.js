@@ -51,7 +51,13 @@ export function createMic({ onChunkText, onError }) {
       const mime = rec.mimeType || 'audio/webm';
       if (parts.length) enqueue(new Blob(parts, { type: mime }), mime, chunkIndex);
       if (recording) {
-        recordOne();
+        try {
+          recordOne();
+        } catch (e) {
+          releaseStream();
+          onError(errorMessage(e));
+          finishStop?.();
+        }
       } else {
         stream?.getTracks().forEach((t) => t.stop());
         stream = null;
@@ -64,6 +70,30 @@ export function createMic({ onChunkText, onError }) {
   }
 
   let finishStop = null;
+  let stopPromise = null;
+
+  // Desliga o microfone (o indicador do sistema apaga) e encerra a gravação.
+  function releaseStream() {
+    recording = false;
+    clearTimeout(timer);
+    stream?.getTracks().forEach((t) => t.stop());
+    stream = null;
+    current = null;
+  }
+
+  async function doStop() {
+    if (recording) {
+      recording = false;
+      await new Promise((resolve) => {
+        finishStop = resolve;
+        if (current && current.state !== 'inactive') current.stop();
+        else { releaseStream(); resolve(); }
+      });
+      finishStop = null;
+    }
+    await queue;
+    return { text, segments, model, language: sourceLanguage ?? language, sourceName: 'Microfone' };
+  }
 
   return {
     async start(modelId, lang) {
@@ -76,21 +106,18 @@ export function createMic({ onChunkText, onError }) {
       queue = Promise.resolve();
       stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       recording = true;
-      recordOne();
-    },
-    // Resolve com o resultado acumulado depois que a fila esvaziar.
-    async stop() {
-      if (recording) {
-        recording = false;
-        await new Promise((resolve) => {
-          finishStop = resolve;
-          if (current && current.state !== 'inactive') current.stop();
-          else resolve();
-        });
-        finishStop = null;
+      stopPromise = null;
+      try {
+        recordOne();
+      } catch (e) {
+        releaseStream();
+        throw e;
       }
-      await queue;
-      return { text, segments, model, language: sourceLanguage ?? language, sourceName: 'Microfone' };
+    },
+    // Resolve com o resultado acumulado depois que a fila esvaziar. Idempotente.
+    stop() {
+      stopPromise ??= doStop();
+      return stopPromise;
     },
   };
 }

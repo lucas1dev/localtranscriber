@@ -20,7 +20,7 @@ const toTranscript = (t) => ({
 });
 
 export function mountStepAudio(root, store) {
-  const ui = { tab: 'file', path: null, model: '', language: null, confirming: false, micRunning: false, elapsed: 0 };
+  const ui = { tab: 'file', path: null, model: '', language: null, confirming: false, micRunning: false, micStopping: false, elapsed: 0 };
   let mic = null;
   let clockTimer = null;
   let optionsKey = null;
@@ -60,7 +60,7 @@ export function mountStepAudio(root, store) {
 
   const bar = h('progress', { max: '100' });
   const barText = h('span', { class: 'bar-text' });
-  const cancelBtn = h('button', { class: 'btn', type: 'button', text: 'Cancelar', onClick: () => api.cancelTranscription().catch(() => {}) });
+  const cancelBtn = h('button', { class: 'btn', type: 'button', text: 'Cancelar', onClick: () => api.cancelTranscription().catch((e) => store.set({ error: errorMessage(e) })) });
   const progress = h('div', { class: 'progress', hidden: true }, bar, barText, cancelBtn);
 
   const pasteLink = h('button', { class: 'link', type: 'button', text: 'Já tenho o texto', onClick: () => { pasteBox.hidden = !pasteBox.hidden; } });
@@ -157,17 +157,18 @@ export function mountStepAudio(root, store) {
   }
 
   async function stopMic() {
+    if (ui.micStopping) return;
+    ui.micStopping = true;
     stopClock();
-    micBtn.disabled = true;
-    micBtn.textContent = 'Finalizando…';
+    render();
     const m = mic;
     try {
       const result = await m.stop();
-      ui.micRunning = false;
+      ui.micRunning = ui.micStopping = false;
       mic = null;
       store.set(afterTranscribe(store.get(), result));
     } catch (e) {
-      ui.micRunning = false;
+      ui.micRunning = ui.micStopping = false;
       mic = null;
       store.set(failJob(store.get(), errorMessage(e)));
     }
@@ -211,8 +212,8 @@ export function mountStepAudio(root, store) {
       micBtn.textContent = 'Gravar';
       micBtn.disabled = !canGo();
     } else if (ui.micRunning) {
-      micBtn.textContent = 'Finalizar';
-      micBtn.disabled = false;
+      micBtn.textContent = ui.micStopping ? 'Finalizando…' : 'Finalizar';
+      micBtn.disabled = ui.micStopping;
     }
     micTime.textContent = clock(ui.elapsed);
 
@@ -236,7 +237,7 @@ export function mountStepAudio(root, store) {
     if (job && job.kind === 'file' && typeof p?.percent === 'number') {
       store.set({ job: { ...job, percent: p.percent } });
     }
-  }).catch(() => {});
+  }).catch((e) => { console.error(e); store.set({ error: errorMessage(e) }); });
 
   on('tauri://drag-drop', (p) => {
     const s = store.get();
@@ -245,7 +246,7 @@ export function mountStepAudio(root, store) {
     ui.tab = 'file';
     ui.path = path;
     render();
-  }).catch(() => {});
+  }).catch((e) => { console.error(e); store.set({ error: errorMessage(e) }); });
 
   render();
   store.subscribe(render);

@@ -3,6 +3,10 @@ import { errorMessage } from '../api.js';
 import { h } from '../dom.js';
 import { saveText, toSrt } from '../export.js';
 import { goTo } from '../flow.js';
+import { liveLine } from '../recorder.js';
+
+// Texto do segmento na lista; na gravação dupla, com a etiqueta (Você/Reunião).
+export const segmentText = (seg) => liveLine(seg);
 
 export function mountStepTranscript(root, store) {
   let shown = null; // transcrição cujo texto está no textarea
@@ -69,7 +73,7 @@ export function mountStepTranscript(root, store) {
     if (t.segments !== shownSegments) {
       shownSegments = t.segments;
       segList.replaceChildren(...t.segments.map((seg) => h('div', { class: 'segment' },
-        h('span', { class: 'seg-time', text: seg.start }), h('span', { text: seg.text }))));
+        h('span', { class: 'seg-time', text: seg.start }), h('span', { text: segmentText(seg) }))));
       segTitle.textContent = `Segmentos (${t.segments.length})`;
     }
     segments.hidden = t.segments.length === 0;

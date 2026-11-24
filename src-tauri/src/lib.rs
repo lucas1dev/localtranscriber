@@ -5,6 +5,7 @@ mod models;
 mod navigation;
 mod paths;
 pub mod providers;
+mod record;
 pub mod summarize;
 mod settings;
 mod state;

@@ -43,7 +43,7 @@ fn run_transcription(
     on_progress: Box<dyn FnMut(i32) + Send>,
 ) -> Result<Transcript, AppError> {
     let model_path = validate_request(&state.paths.models_dir, model, language)?;
-    let pcm = decode_to_pcm(&state.sidecars.ffmpeg, input)?;
+    let pcm = decode_to_pcm(&state.sidecars.ffmpeg, input, &cancel)?;
     let segments =
         state
             .engine

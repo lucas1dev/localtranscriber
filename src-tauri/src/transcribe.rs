@@ -1,4 +1,5 @@
 use std::ffi::{c_int, c_void, OsString};
+use std::io::Read;
 use std::path::Path;
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -52,8 +53,37 @@ pub fn ffmpeg_args(input: &Path) -> Vec<OsString> {
     args
 }
 
-/// Decodifica qualquer áudio/vídeo para as amostras que o whisper espera.
-pub fn decode_to_pcm(ffmpeg: &Path, input: &Path) -> Result<Vec<f32>, AppError> {
+/// Converte f32 little-endian que chega em pedaços de qualquer tamanho; os 1–3 bytes
+/// que sobram de um pedaço ficam guardados para o próximo.
+#[derive(Default)]
+struct F32leDecoder {
+    rest: Vec<u8>,
+}
+
+impl F32leDecoder {
+    fn push(&mut self, mut bytes: &[u8], out: &mut Vec<f32>) {
+        if !self.rest.is_empty() {
+            let need = (4 - self.rest.len()).min(bytes.len());
+            self.rest.extend_from_slice(&bytes[..need]);
+            bytes = &bytes[need..];
+            if self.rest.len() < 4 {
+                return;
+            }
+            out.push(f32::from_le_bytes([self.rest[0], self.rest[1], self.rest[2], self.rest[3]]));
+            self.rest.clear();
+        }
+        let mut samples = bytes.chunks_exact(4);
+        out.extend(samples.by_ref().map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]])));
+        self.rest.extend_from_slice(samples.remainder());
+    }
+}
+
+/// Decodifica qualquer áudio/vídeo para as amostras que o whisper espera, lendo a saída
+/// do FFmpeg aos poucos. Com `cancel` ligado, mata o FFmpeg e devolve `Cancelled`.
+pub fn decode_to_pcm(ffmpeg: &Path, input: &Path, cancel: &AtomicBool) -> Result<Vec<f32>, AppError> {
+    if cancel.load(Ordering::Relaxed) {
+        return Err(AppError::Cancelled);
+    }
     let mut cmd = Command::new(ffmpeg);
     cmd.args(ffmpeg_args(input))
         .stdin(Stdio::null())
@@ -65,21 +95,53 @@ pub fn decode_to_pcm(ffmpeg: &Path, input: &Path) -> Result<Vec<f32>, AppError> 
         const CREATE_NO_WINDOW: u32 = 0x0800_0000;
         cmd.creation_flags(CREATE_NO_WINDOW);
     }
-    let out = cmd
-        .output()
+    let mut child = cmd
+        .spawn()
         .map_err(|e| AppError::Internal(format!("Não foi possível executar o FFmpeg: {e}")))?;
-    if !out.status.success() {
-        let stderr = String::from_utf8_lossy(&out.stderr);
+    let mut stdout = child.stdout.take().expect("stdout em pipe");
+    let mut stderr = child.stderr.take().expect("stderr em pipe");
+    // O stderr é lido em paralelo para o FFmpeg nunca travar com o pipe cheio.
+    let stderr_reader = std::thread::spawn(move || {
+        let mut buf = Vec::new();
+        let _ = stderr.read_to_end(&mut buf);
+        buf
+    });
+
+    let mut pcm = Vec::new();
+    let mut decoder = F32leDecoder::default();
+    let mut buf = vec![0u8; 64 * 1024];
+    let read = loop {
+        if cancel.load(Ordering::Relaxed) {
+            break Err(AppError::Cancelled);
+        }
+        match stdout.read(&mut buf) {
+            Ok(0) => break Ok(()),
+            Ok(n) => decoder.push(&buf[..n], &mut pcm),
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
+            Err(e) => {
+                break Err(AppError::Internal(format!(
+                    "Falha ao ler a saída do FFmpeg: {e}"
+                )))
+            }
+        }
+    };
+    if read.is_err() {
+        let _ = child.kill();
+    }
+    drop(stdout);
+    let status = child.wait();
+    let stderr = stderr_reader.join().unwrap_or_default();
+    read?;
+    let status =
+        status.map_err(|e| AppError::Internal(format!("Falha ao aguardar o FFmpeg: {e}")))?;
+    if !status.success() {
+        let stderr = String::from_utf8_lossy(&stderr);
         return Err(AppError::User(format!(
             "Não foi possível ler o áudio: {}",
             last_chars(stderr.trim(), 600)
         )));
     }
-    Ok(out
-        .stdout
-        .chunks_exact(4)
-        .map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]]))
-        .collect())
+    Ok(pcm)
 }
 
 fn last_chars(s: &str, n: usize) -> &str {
@@ -97,8 +159,8 @@ pub fn join_text(segments: &[Segment]) -> String {
         .join(" ")
 }
 
-/// RMS (≈ -50 dBFS) abaixo do qual uma janela de 20 ms conta como silêncio.
-const SILENCE_RMS: f32 = 0.003;
+/// RMS (-60 dBFS) abaixo do qual uma janela de 20 ms conta como silêncio.
+const SILENCE_RMS: f32 = 0.001;
 
 /// O whisper inventa texto ("Thank you.") em áudio sem som; se nenhuma janela
 /// de 20 ms passa do limiar, nem chamamos o modelo.
@@ -286,11 +348,21 @@ mod tests {
             .collect()
     }
 
+    /// Senoide com o RMS em `db` dBFS.
+    fn sine_dbfs(db: f32, samples: usize) -> Vec<f32> {
+        sine(10f32.powf(db / 20.0) * std::f32::consts::SQRT_2, samples)
+    }
+
     #[test]
     fn digital_silence_and_faint_hiss_are_silent() {
         assert!(is_silent(&[]));
         assert!(is_silent(&vec![0.0; 16000 * 5]));
-        assert!(is_silent(&sine(0.002, 16000)));
+        assert!(is_silent(&sine_dbfs(-65.0, 16000)));
+    }
+
+    #[test]
+    fn quiet_speech_level_passes_the_gate() {
+        assert!(!is_silent(&sine_dbfs(-55.0, 16000)));
     }
 
     #[test]
@@ -299,6 +371,102 @@ mod tests {
         pcm.extend(sine(0.1, 1600));
         pcm.extend(vec![0.0; 16000]);
         assert!(!is_silent(&pcm));
+    }
+
+    fn decode_all(pieces: &[&[u8]]) -> Vec<f32> {
+        let mut dec = F32leDecoder::default();
+        let mut out = Vec::new();
+        for p in pieces {
+            dec.push(p, &mut out);
+        }
+        out
+    }
+
+    #[test]
+    fn f32le_decoder_handles_any_split() {
+        let samples = [1.0f32, 2.0, -0.5, 0.25];
+        let bytes: Vec<u8> = samples.iter().flat_map(|x| x.to_le_bytes()).collect();
+        assert_eq!(decode_all(&[&bytes]), samples);
+        for split in 0..bytes.len() {
+            let (a, b) = bytes.split_at(split);
+            assert_eq!(decode_all(&[a, b]), samples, "split {split}");
+        }
+        let singles: Vec<&[u8]> = bytes.chunks(1).collect();
+        assert_eq!(decode_all(&singles), samples);
+        // Sobra incompleta no fim é descartada.
+        assert_eq!(decode_all(&[&bytes[..6]]), [1.0]);
+    }
+
+    #[cfg(unix)]
+    mod fake_ffmpeg {
+        use super::*;
+        use crate::providers::cli::tests::script;
+        use std::time::{Duration, Instant};
+
+        #[test]
+        fn decodes_streamed_output_in_odd_pieces() {
+            let tmp = tempfile::tempdir().unwrap();
+            // 1.0, 2.0, -0.5 em f32le, escritos em pedaços que cortam as amostras.
+            let ffmpeg = script(
+                tmp.path(),
+                "ffmpeg",
+                r"printf '\000\000'; sleep 0.05; printf '\200\077\000'; sleep 0.05; printf '\000\000\100\000\000'; sleep 0.05; printf '\000\277'",
+            );
+            let pcm = decode_to_pcm(&ffmpeg, Path::new("x.wav"), &AtomicBool::new(false)).unwrap();
+            assert_eq!(pcm, [1.0, 2.0, -0.5]);
+        }
+
+        #[test]
+        fn failure_reports_stderr() {
+            let tmp = tempfile::tempdir().unwrap();
+            let ffmpeg = script(tmp.path(), "ffmpeg", "echo 'Invalid data found' >&2; exit 1");
+            match decode_to_pcm(&ffmpeg, Path::new("x.wav"), &AtomicBool::new(false)) {
+                Err(AppError::User(m)) => assert_eq!(m, "Não foi possível ler o áudio: Invalid data found"),
+                other => panic!("{other:?}"),
+            }
+        }
+
+        #[test]
+        fn cancel_before_decoding_does_not_run_ffmpeg() {
+            let tmp = tempfile::tempdir().unwrap();
+            let ran = tmp.path().join("ran");
+            let ffmpeg = script(tmp.path(), "ffmpeg", &format!("touch '{}'", ran.display()));
+            let r = decode_to_pcm(&ffmpeg, Path::new("x.wav"), &AtomicBool::new(true));
+            assert!(matches!(r, Err(AppError::Cancelled)), "{r:?}");
+            assert!(!ran.exists());
+        }
+
+        #[test]
+        fn cancel_while_decoding_kills_ffmpeg() {
+            let tmp = tempfile::tempdir().unwrap();
+            let pid_file = tmp.path().join("pid");
+            // Saída sem fim, como um áudio muito longo.
+            let ffmpeg = script(
+                tmp.path(),
+                "ffmpeg",
+                &format!(
+                    r"echo $$ > '{}'; while true; do printf '\000\000\000\000\000\000\000\000'; sleep 0.01; done",
+                    pid_file.display()
+                ),
+            );
+            let cancel = Arc::new(AtomicBool::new(false));
+            let flag = Arc::clone(&cancel);
+            std::thread::spawn(move || {
+                std::thread::sleep(Duration::from_millis(300));
+                flag.store(true, Ordering::Relaxed);
+            });
+            let started = Instant::now();
+            let r = decode_to_pcm(&ffmpeg, Path::new("x.wav"), &cancel);
+            assert!(matches!(r, Err(AppError::Cancelled)), "{r:?}");
+            assert!(started.elapsed() < Duration::from_secs(5));
+            let pid = std::fs::read_to_string(&pid_file).unwrap();
+            let alive = std::process::Command::new("kill")
+                .args(["-0", pid.trim()])
+                .status()
+                .unwrap()
+                .success();
+            assert!(!alive, "o FFmpeg deveria ter sido encerrado");
+        }
     }
 
     #[test]

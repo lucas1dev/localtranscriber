@@ -40,7 +40,7 @@ fn transcribes_jfk() {
     let (Some(ffmpeg), Some(model)) = (env_path("LT_FFMPEG"), env_path("LT_MODEL")) else {
         return;
     };
-    let pcm = decode_to_pcm(&ffmpeg, &jfk()).unwrap();
+    let pcm = decode_to_pcm(&ffmpeg, &jfk(), &AtomicBool::new(false)).unwrap();
     let progress = Arc::new(std::sync::Mutex::new(Vec::new()));
     let seen = progress.clone();
     let segments = Engine::new()
@@ -73,8 +73,29 @@ fn decodes_file_with_accented_name() {
     let dir = tempfile::tempdir().unwrap();
     let copy = dir.path().join("Reunião ação 1.wav");
     std::fs::copy(jfk(), &copy).unwrap();
-    let pcm = decode_to_pcm(&ffmpeg, &copy).unwrap();
+    let pcm = decode_to_pcm(&ffmpeg, &copy, &AtomicBool::new(false)).unwrap();
     assert!(pcm.len() > 16000, "pcm curto demais: {}", pcm.len());
+}
+
+#[test]
+#[ignore]
+fn streaming_decode_matches_full_output() {
+    let Some(ffmpeg) = env_path("LT_FFMPEG") else {
+        return;
+    };
+    let out = std::process::Command::new(&ffmpeg)
+        .args(local_transcriber_lib::transcribe::ffmpeg_args(&jfk()))
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    let want: Vec<f32> = out
+        .stdout
+        .chunks_exact(4)
+        .map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+        .collect();
+    let got = decode_to_pcm(&ffmpeg, &jfk(), &AtomicBool::new(false)).unwrap();
+    assert!(got.len() > 16000);
+    assert_eq!(got, want);
 }
 
 #[test]
@@ -103,7 +124,7 @@ fn cancel_aborts() {
     let (Some(ffmpeg), Some(model)) = (env_path("LT_FFMPEG"), env_path("LT_MODEL")) else {
         return;
     };
-    let pcm = decode_to_pcm(&ffmpeg, &jfk()).unwrap();
+    let pcm = decode_to_pcm(&ffmpeg, &jfk(), &AtomicBool::new(false)).unwrap();
     let result = Engine::new().transcribe(
         &model,
         "test",
@@ -124,7 +145,7 @@ fn cancel_during_run_aborts() {
     let (Some(ffmpeg), Some(model)) = (env_path("LT_FFMPEG"), env_path("LT_MODEL")) else {
         return;
     };
-    let pcm = decode_to_pcm(&ffmpeg, &jfk()).unwrap();
+    let pcm = decode_to_pcm(&ffmpeg, &jfk(), &AtomicBool::new(false)).unwrap();
     let cancel = Arc::new(AtomicBool::new(false));
     let flag = cancel.clone();
     // Cancela no primeiro aviso de progresso, já com o whisper rodando.

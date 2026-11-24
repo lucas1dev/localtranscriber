@@ -197,8 +197,10 @@ pub fn open(
         }
         #[cfg(target_os = "macos")]
         SourceKind::System => {
-            let _ = &fault; // o tap não tem callback de erro
-            let tap = super::mac_tap::SystemTap::open(sink)?;
+            // Os listeners do tap guardam um ponteiro para a célula de falha e
+            // podem rodar logo depois de removidos: a célula nunca é liberada.
+            let fault_cell: &'static Arc<AtomicU8> = Box::leak(Box::new(fault.clone()));
+            let tap = super::mac_tap::SystemTap::open(sink, fault_cell)?;
             (Backend::MacTap(tap), "Som do computador".to_string(), None)
         }
         #[cfg(not(target_os = "macos"))]
@@ -315,7 +317,7 @@ where
         move |err: cpal::Error| {
             // Só marca a falha; quem avisa é a thread de conversão.
             if let Some(f) = Fault::from_kind(err.kind()) {
-                let _ = fault.compare_exchange(0, f as u8, Ordering::Relaxed, Ordering::Relaxed);
+                record_fault(&fault, f);
             }
         },
         None,
@@ -398,9 +400,7 @@ impl Worker {
 
     /// Marca uma falha para o laço avisar e encerrar.
     fn fail(&self, fault: Fault) {
-        let _ = self
-            .fault
-            .compare_exchange(0, fault as u8, Ordering::Relaxed, Ordering::Relaxed);
+        record_fault(&self.fault, fault);
     }
 
     fn flush(&mut self) {
@@ -432,9 +432,15 @@ impl Worker {
     }
 }
 
+/// Guarda a primeira falha da captura; a thread de conversão avisa e encerra.
+/// Só um `compare_exchange`: pode ser chamado de callbacks de áudio e listeners.
+pub(super) fn record_fault(cell: &AtomicU8, fault: Fault) {
+    let _ = cell.compare_exchange(0, fault as u8, Ordering::Relaxed, Ordering::Relaxed);
+}
+
 /// Falha do stream que encerra a captura.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Fault {
+pub(super) enum Fault {
     Disconnected = 1,
     Permission = 2,
     Other = 3,
@@ -701,6 +707,48 @@ mod tests {
             })
             .sum();
         assert!((total as i64 - 16_000).abs() <= 2, "total {total}");
+    }
+
+    #[test]
+    fn system_fault_cell_ends_worker_with_failed() {
+        // O fio de falha que o tap do Mac usa: a fila bruta continua aberta e só a
+        // célula de falha encerra a captura.
+        let (raw_tx, raw_rx) = mpsc::sync_channel(1024);
+        let (tx, rx) = mpsc::sync_channel(1024);
+        let fault = Arc::new(AtomicU8::new(0));
+        let worker = Worker {
+            raw_rx,
+            converter: None,
+            tx,
+            fault: fault.clone(),
+            stopping: Arc::new(AtomicBool::new(false)),
+            dropped: Arc::new(AtomicU64::new(0)),
+            kind: SourceKind::System,
+        };
+        let handle = std::thread::spawn(move || worker.run());
+        for p in packets(48_000, 1, 1) {
+            raw_tx.send(p).unwrap();
+        }
+        std::thread::sleep(Duration::from_millis(200));
+        record_fault(&fault, Fault::Other);
+        handle.join().unwrap();
+
+        let msgs: Vec<SourceMsg> = rx.try_iter().collect();
+        assert_eq!(
+            msgs.last(),
+            Some(&SourceMsg::Failed(
+                "A captura do som do computador falhou.".into()
+            ))
+        );
+        let total: usize = msgs
+            .iter()
+            .map(|m| match m {
+                SourceMsg::Pcm(p) => p.len(),
+                _ => 0,
+            })
+            .sum();
+        assert!((total as i64 - 16_000).abs() <= 2, "total {total}");
+        drop(raw_tx);
     }
 
     #[test]

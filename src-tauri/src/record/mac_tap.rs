@@ -14,7 +14,7 @@
 use std::ffi::{c_void, CStr};
 use std::mem::{size_of, MaybeUninit};
 use std::ptr::NonNull;
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicU8, Ordering};
 
 use objc2::rc::Retained;
 use objc2::runtime::AnyObject;
@@ -22,13 +22,14 @@ use objc2::AnyThread;
 use objc2_core_audio::{
     kAudioAggregateDeviceIsPrivateKey, kAudioAggregateDeviceNameKey,
     kAudioAggregateDeviceTapAutoStartKey, kAudioAggregateDeviceTapListKey,
-    kAudioAggregateDeviceUIDKey, kAudioDevicePermissionsError,
+    kAudioAggregateDeviceUIDKey, kAudioDevicePermissionsError, kAudioDevicePropertyDeviceIsAlive,
     kAudioDevicePropertyNominalSampleRate, kAudioDevicePropertyStreams,
-    kAudioHardwareBadPropertySizeError, kAudioObjectPropertyElementMain,
-    kAudioObjectPropertyScopeGlobal, kAudioObjectPropertyScopeInput,
-    kAudioStreamPropertyVirtualFormat, kAudioSubTapDriftCompensationKey, kAudioSubTapUIDKey,
-    AudioDeviceCreateIOProcID, AudioDeviceDestroyIOProcID, AudioDeviceIOProcID, AudioDeviceStart,
-    AudioDeviceStop, AudioHardwareCreateAggregateDevice, AudioHardwareCreateProcessTap,
+    kAudioHardwareBadPropertySizeError, kAudioHardwarePropertyServiceRestarted,
+    kAudioObjectPropertyElementMain, kAudioObjectPropertyScopeGlobal,
+    kAudioObjectPropertyScopeInput, kAudioObjectSystemObject, kAudioStreamPropertyVirtualFormat,
+    kAudioSubTapDriftCompensationKey, kAudioSubTapUIDKey, AudioDeviceCreateIOProcID,
+    AudioDeviceDestroyIOProcID, AudioDeviceIOProcID, AudioDeviceStart, AudioDeviceStop,
+    AudioHardwareCreateAggregateDevice, AudioHardwareCreateProcessTap,
     AudioHardwareDestroyAggregateDevice, AudioHardwareDestroyProcessTap,
     AudioObjectAddPropertyListener, AudioObjectGetPropertyData, AudioObjectID,
     AudioObjectPropertyAddress, AudioObjectRemovePropertyListener, CATapDescription,
@@ -41,7 +42,7 @@ use objc2_core_audio_types::{
 use objc2_core_foundation::CFDictionary;
 use objc2_foundation::{NSArray, NSDictionary, NSNumber, NSString};
 
-use super::devices::{Raw, RawSink, SYSTEM_PERMISSION};
+use super::devices::{record_fault, Fault, Raw, RawSink, SYSTEM_PERMISSION};
 use crate::error::AppError;
 
 /// Contador para o UID do agregado ser único em cada abertura.
@@ -57,6 +58,18 @@ const RATE_ADDRESS: AudioObjectPropertyAddress = AudioObjectPropertyAddress {
     mElement: kAudioObjectPropertyElementMain,
 };
 
+const ALIVE_ADDRESS: AudioObjectPropertyAddress = AudioObjectPropertyAddress {
+    mSelector: kAudioDevicePropertyDeviceIsAlive,
+    mScope: kAudioObjectPropertyScopeGlobal,
+    mElement: kAudioObjectPropertyElementMain,
+};
+
+const RESTART_ADDRESS: AudioObjectPropertyAddress = AudioObjectPropertyAddress {
+    mSelector: kAudioHardwarePropertyServiceRestarted,
+    mScope: kAudioObjectPropertyScopeGlobal,
+    mElement: kAudioObjectPropertyElementMain,
+};
+
 /// Dados do IOProc. A taxa é atualizada por um listener quando o agregado muda
 /// de taxa (por exemplo, fone Bluetooth entrando em modo de chamada).
 struct IoCtx {
@@ -68,12 +81,18 @@ struct IoCtx {
 }
 
 /// Tap global + agregado + IOProc. O drop para e desfaz tudo, na ordem:
-/// para o dispositivo, destrói o IOProc, o agregado e o tap.
+/// para o dispositivo, destrói o IOProc, remove os listeners e destrói o
+/// agregado e o tap.
 pub(super) struct SystemTap {
     tap_id: AudioObjectID,
     aggregate_id: AudioObjectID,
     proc_id: AudioDeviceIOProcID,
     rate: Option<&'static AtomicU32>,
+    /// Célula de falha compartilhada com a thread de conversão. `'static` pela
+    /// mesma razão da taxa: um listener pode rodar logo depois de removido.
+    fault: &'static AtomicU8,
+    alive_listening: bool,
+    restart_listening: bool,
     ctx: *mut IoCtx,
 }
 
@@ -82,13 +101,17 @@ pub(super) struct SystemTap {
 unsafe impl Send for SystemTap {}
 
 impl SystemTap {
-    /// Cria o tap e o agregado e começa a mandar áudio para `sink`.
-    pub fn open(sink: RawSink) -> Result<SystemTap, AppError> {
+    /// Cria o tap e o agregado e começa a mandar áudio para `sink`. Se o
+    /// agregado morrer ou o serviço de áudio reiniciar, marca `fault`.
+    pub fn open(sink: RawSink, fault: &'static AtomicU8) -> Result<SystemTap, AppError> {
         let mut tap = SystemTap {
             tap_id: 0,
             aggregate_id: 0,
             proc_id: None,
             rate: None,
+            fault,
+            alive_listening: false,
+            restart_listening: false,
             ctx: std::ptr::null_mut(),
         };
 
@@ -171,6 +194,25 @@ impl SystemTap {
         })?;
         tap.rate = Some(rate);
 
+        check("acompanhar o dispositivo agregado", unsafe {
+            AudioObjectAddPropertyListener(
+                aggregate_id,
+                NonNull::from(&ALIVE_ADDRESS),
+                Some(alive_listener),
+                fault_client(fault),
+            )
+        })?;
+        tap.alive_listening = true;
+        check("acompanhar o serviço de áudio", unsafe {
+            AudioObjectAddPropertyListener(
+                SYSTEM_OBJECT,
+                NonNull::from(&RESTART_ADDRESS),
+                Some(restart_listener),
+                fault_client(fault),
+            )
+        })?;
+        tap.restart_listening = true;
+
         check("iniciar a captura", unsafe {
             AudioDeviceStart(aggregate_id, tap.proc_id)
         })?;
@@ -185,6 +227,24 @@ impl Drop for SystemTap {
             if self.proc_id.is_some() {
                 let _ = AudioDeviceStop(self.aggregate_id, self.proc_id);
                 let _ = AudioDeviceDestroyIOProcID(self.aggregate_id, self.proc_id);
+            }
+            // Listeners saem antes de destruir o agregado, para a destruição
+            // normal não virar uma falha.
+            if self.restart_listening {
+                let _ = AudioObjectRemovePropertyListener(
+                    SYSTEM_OBJECT,
+                    NonNull::from(&RESTART_ADDRESS),
+                    Some(restart_listener),
+                    fault_client(self.fault),
+                );
+            }
+            if self.alive_listening {
+                let _ = AudioObjectRemovePropertyListener(
+                    self.aggregate_id,
+                    NonNull::from(&ALIVE_ADDRESS),
+                    Some(alive_listener),
+                    fault_client(self.fault),
+                );
             }
             if let Some(rate) = self.rate {
                 let _ = AudioObjectRemovePropertyListener(
@@ -256,6 +316,49 @@ unsafe extern "C-unwind" fn rate_listener(
     }
     0
 }
+
+/// Listener de "está vivo" do agregado: se morreu (ou não responde), marca a
+/// falha; a thread de conversão manda `Failed` e a sessão reabre a fonte.
+unsafe extern "C-unwind" fn alive_listener(
+    object: AudioObjectID,
+    _count: u32,
+    _addresses: NonNull<AudioObjectPropertyAddress>,
+    client: *mut c_void,
+) -> i32 {
+    let Some(fault) = (client as *const AtomicU8).as_ref() else {
+        return 0;
+    };
+    let alive = property::<u32>(
+        object,
+        kAudioDevicePropertyDeviceIsAlive,
+        kAudioObjectPropertyScopeGlobal,
+    );
+    if !matches!(alive, Ok(v) if v != 0) {
+        record_fault(fault, Fault::Other);
+    }
+    0
+}
+
+/// Listener de reinício do serviço de áudio (coreaudiod): o tap e o agregado
+/// deixam de existir, então marca a falha para a sessão reabrir.
+unsafe extern "C-unwind" fn restart_listener(
+    _object: AudioObjectID,
+    _count: u32,
+    _addresses: NonNull<AudioObjectPropertyAddress>,
+    client: *mut c_void,
+) -> i32 {
+    if let Some(fault) = (client as *const AtomicU8).as_ref() {
+        record_fault(fault, Fault::Other);
+    }
+    0
+}
+
+/// Ponteiro de cliente dos listeners de falha.
+fn fault_client(fault: &'static AtomicU8) -> *mut c_void {
+    (fault as *const AtomicU8).cast_mut().cast()
+}
+
+const SYSTEM_OBJECT: AudioObjectID = kAudioObjectSystemObject as AudioObjectID;
 
 /// Lê os buffers do IOProc como amostras intercaladas e o número de canais.
 unsafe fn read_buffers(buffers: &[AudioBuffer]) -> Option<(Vec<f32>, u16)> {
@@ -417,6 +520,52 @@ mod tests {
 
     fn key(k: &std::ffi::CStr) -> Retained<NSString> {
         NSString::from_str(k.to_str().unwrap())
+    }
+
+    fn call(
+        listener: unsafe extern "C-unwind" fn(
+            AudioObjectID,
+            u32,
+            NonNull<AudioObjectPropertyAddress>,
+            *mut c_void,
+        ) -> i32,
+        object: AudioObjectID,
+        cell: &AtomicU8,
+    ) {
+        let address = ALIVE_ADDRESS;
+        let status = unsafe {
+            listener(
+                object,
+                1,
+                NonNull::from(&address),
+                (cell as *const AtomicU8).cast_mut().cast(),
+            )
+        };
+        assert_eq!(status, 0);
+    }
+
+    #[test]
+    fn service_restart_marks_system_fault() {
+        let cell = AtomicU8::new(0);
+        call(restart_listener, SYSTEM_OBJECT, &cell);
+        assert_eq!(cell.load(Ordering::Relaxed), Fault::Other as u8);
+    }
+
+    #[test]
+    fn dead_aggregate_marks_system_fault() {
+        // Objeto 0 (kAudioObjectUnknown) não responde a "está vivo": conta como morto.
+        let cell = AtomicU8::new(0);
+        call(alive_listener, 0, &cell);
+        assert_eq!(cell.load(Ordering::Relaxed), Fault::Other as u8);
+    }
+
+    #[test]
+    fn listeners_ignore_null_client() {
+        let address = ALIVE_ADDRESS;
+        for listener in [alive_listener, restart_listener] {
+            let status = unsafe { listener(0, 1, NonNull::from(&address), std::ptr::null_mut()) };
+            assert_eq!(status, 0);
+        }
     }
 
     #[test]

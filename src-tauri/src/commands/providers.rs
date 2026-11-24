@@ -6,7 +6,7 @@ use serde::Serialize;
 use serde_json::json;
 use tauri::{AppHandle, Emitter, State};
 
-use super::models::{claim, release};
+use super::models::{claim, release, ReleaseGuard};
 use crate::credentials;
 use crate::error::AppError;
 use crate::providers::codex::{AuthStatus, Codex};
@@ -241,6 +241,10 @@ pub async fn ollama_pull(
     )?;
     let state = Arc::clone(&state);
     tokio::spawn(async move {
+        let guard = {
+            let (state, name) = (Arc::clone(&state), name.clone());
+            ReleaseGuard::new(move || release(&state.ollama_pulls, &name))
+        };
         let progress_app = app.clone();
         let progress_name = name.clone();
         let result = ollama::pull(
@@ -256,7 +260,7 @@ pub async fn ollama_pull(
             },
         )
         .await;
-        release(&state.ollama_pulls, &name);
+        drop(guard);
         let (ok, error) = match result {
             Ok(()) => (true, None),
             Err(e) => (false, Some(e)),

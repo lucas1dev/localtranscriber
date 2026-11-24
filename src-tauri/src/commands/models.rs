@@ -1,4 +1,5 @@
 use std::path::PathBuf;
+use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
 
 use serde_json::json;
@@ -30,6 +31,33 @@ pub fn release(map: &Mutex<HashMap<String, CancellationToken>>, key: &str) {
     map.lock().unwrap_or_else(|e| e.into_inner()).remove(key);
 }
 
+/// Executa a closure ao ser descartado (inclusive durante um panic).
+pub struct ReleaseGuard(Option<Box<dyn FnOnce() + Send>>);
+
+impl ReleaseGuard {
+    pub fn new(f: impl FnOnce() + Send + 'static) -> Self {
+        Self(Some(Box::new(f)))
+    }
+}
+
+impl Drop for ReleaseGuard {
+    fn drop(&mut self) {
+        if let Some(f) = self.0.take() {
+            f();
+        }
+    }
+}
+
+/// Recusa mudanças nos modelos enquanto há uma transcrição em andamento.
+fn ensure_no_transcription(slot: &Mutex<Option<Arc<AtomicBool>>>) -> Result<(), AppError> {
+    if slot.lock().unwrap_or_else(|e| e.into_inner()).is_some() {
+        return Err(AppError::User(
+            "Aguarde a transcrição terminar para alterar os modelos.".into(),
+        ));
+    }
+    Ok(())
+}
+
 fn default_id(state: &AppState) -> String {
     state
         .settings
@@ -56,6 +84,10 @@ pub async fn download_model(
     let token = claim(&state.downloads, &id, "Este modelo já está sendo baixado.")?;
     let state = Arc::clone(&state);
     tokio::spawn(async move {
+        let guard = {
+            let (state, id) = (Arc::clone(&state), id.clone());
+            ReleaseGuard::new(move || release(&state.downloads, &id))
+        };
         let progress_app = app.clone();
         let progress_id = id.clone();
         let result = models::download(
@@ -72,7 +104,7 @@ pub async fn download_model(
             },
         )
         .await;
-        release(&state.downloads, &id);
+        drop(guard);
         let (ok, error) = match result {
             Ok(_) => (true, None),
             Err(e) => (false, Some(e)),
@@ -95,7 +127,8 @@ pub fn cancel_download(state: State<'_, Arc<AppState>>, id: String) {
 }
 
 #[tauri::command]
-pub fn delete_model(state: State<'_, Arc<AppState>>, id: String) -> Result<(), AppError> {
+pub async fn delete_model(state: State<'_, Arc<AppState>>, id: String) -> Result<(), AppError> {
+    ensure_no_transcription(&state.transcription_cancel)?;
     if state
         .downloads
         .lock()
@@ -106,8 +139,13 @@ pub fn delete_model(state: State<'_, Arc<AppState>>, id: String) -> Result<(), A
             "Aguarde o download terminar ou cancele antes de remover.".into(),
         ));
     }
-    state.engine.evict();
-    models::delete(&state.paths.models_dir, &id)
+    let state = Arc::clone(&state);
+    tokio::task::spawn_blocking(move || {
+        state.engine.evict();
+        models::delete(&state.paths.models_dir, &id)
+    })
+    .await
+    .map_err(|e| AppError::Internal(format!("Falha ao remover o modelo: {e}")))?
 }
 
 #[tauri::command]
@@ -133,6 +171,7 @@ pub async fn import_model(
     state: State<'_, Arc<AppState>>,
     path: String,
 ) -> Result<String, AppError> {
+    ensure_no_transcription(&state.transcription_cancel)?;
     let state = Arc::clone(&state);
     tokio::task::spawn_blocking(move || {
         let id = models::import_file(&PathBuf::from(path), &state.paths.models_dir)?;
@@ -158,5 +197,36 @@ mod tests {
         claim(&map, "b", "ocupado").unwrap();
         release(&map, "a");
         claim(&map, "a", "ocupado").unwrap();
+    }
+
+    #[test]
+    fn guard_releases_on_drop_and_on_panic() {
+        let map = Arc::new(Mutex::new(HashMap::new()));
+        claim(&map, "a", "x").unwrap();
+        let m = Arc::clone(&map);
+        drop(ReleaseGuard::new(move || release(&m, "a")));
+        assert!(map.lock().unwrap().is_empty());
+
+        claim(&map, "b", "x").unwrap();
+        let m = Arc::clone(&map);
+        let r = std::panic::catch_unwind(move || {
+            let _g = ReleaseGuard::new(move || release(&m, "b"));
+            panic!("boom");
+        });
+        assert!(r.is_err());
+        assert!(map.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn busy_while_transcribing() {
+        let slot = Mutex::new(None);
+        assert!(ensure_no_transcription(&slot).is_ok());
+        *slot.lock().unwrap() = Some(Arc::new(AtomicBool::new(false)));
+        match ensure_no_transcription(&slot) {
+            Err(AppError::User(m)) => {
+                assert_eq!(m, "Aguarde a transcrição terminar para alterar os modelos.")
+            }
+            other => panic!("{other:?}"),
+        }
     }
 }

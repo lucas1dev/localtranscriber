@@ -18,7 +18,6 @@ use std::time::{Duration, Instant};
 use super::devices::{self, OpenSource, SourceKind, SourceMsg, MIC_GONE};
 use super::merge::{interleave, labeled_text, shift_segments};
 use super::track::{level, Track};
-use super::SAMPLE_RATE;
 use crate::error::AppError;
 use crate::transcribe::{join_text, Segment};
 
@@ -32,9 +31,10 @@ const PAD_MARGIN: Duration = Duration::from_millis(500);
 const OUTPUT_POLL_TICKS: u64 = 10;
 /// Reaberturas seguidas (sem a fonte se firmar) antes de desistir.
 const MAX_TRIES: u32 = 3;
-/// Áudio que uma fonte reaberta precisa entregar para zerar a contagem (5 s): uma
-/// fonte que abre e logo falha de novo continua contando, e a gravação para.
-const HEALTHY_SAMPLES: usize = 5 * SAMPLE_RATE as usize;
+/// Tempo (pelo relógio da sessão) que uma fonte reaberta precisa ficar de pé, sem
+/// `Failed`, para zerar a contagem. Uma fonte que abre e logo falha de novo
+/// continua contando; um loopback mudo do Windows, que não manda pacotes, não.
+const HEALTHY_FOR: Duration = Duration::from_secs(5);
 /// Ciclos de espera entre uma tentativa de reabrir e a próxima (500 ms).
 const RETRY_TICKS: u32 = 5;
 /// Sem áudio novo por tantos ciclos, o nível cai para zero (500 ms).
@@ -231,12 +231,11 @@ struct Live {
     rx: Option<Receiver<SourceMsg>>,
     reopen: Reopen,
     track: Track,
-    /// Tentativas de reabrir desde a última vez que a fonte se firmou
-    /// (`HEALTHY_SAMPLES` entregues depois de reabrir). Troca de saída bem-sucedida
-    /// não conta.
+    /// Tentativas de reabrir desde a última vez que a fonte se firmou (`HEALTHY_FOR`
+    /// de pé depois de reabrir). Troca de saída bem-sucedida não conta.
     tries: u32,
-    /// Amostras entregues desde a última reabertura.
-    since_reopen: usize,
+    /// Quando a captura atual foi aberta.
+    opened_at: Instant,
     /// Ciclos até a próxima tentativa, com a fonte caída.
     retry_in: u32,
     /// Áudio drenado no último ciclo.
@@ -255,7 +254,7 @@ impl Live {
             reopen: spec.reopen,
             track: Track::new(start),
             tries: 0,
-            since_reopen: 0,
+            opened_at: start,
             retry_in: 0,
             pending: Vec::new(),
             level: 0.0,
@@ -285,12 +284,6 @@ impl Live {
         if !self.pending.is_empty() {
             self.track.push(&self.pending, now);
         }
-        if self.tries > 0 {
-            self.since_reopen += self.pending.len();
-            if self.since_reopen >= HEALTHY_SAMPLES {
-                self.tries = 0;
-            }
-        }
         failed
     }
 
@@ -315,10 +308,10 @@ impl Live {
         self.rx = None;
     }
 
-    fn install(&mut self, opened: Opened) {
+    fn install(&mut self, opened: Opened, now: Instant) {
         self.capture = Some(opened.capture);
         self.rx = Some(opened.rx);
-        self.since_reopen = 0;
+        self.opened_at = now;
     }
 
     /// A captura parou. Microfone desconectado, ou uma fonte que já foi reaberta
@@ -347,7 +340,15 @@ impl Live {
     }
 
     /// Reabre a fonte caída, ou a de sistema cuja saída padrão mudou.
-    fn maintain(&mut self, tick: u64, env: &Env) -> Result<(), String> {
+    /// Roda depois de `drain`/`on_failed` no mesmo ciclo: uma captura ainda aberta
+    /// aqui não falhou até `now`.
+    fn maintain(&mut self, tick: u64, env: &Env, now: Instant) -> Result<(), String> {
+        if self.capture.is_some()
+            && self.tries > 0
+            && now.saturating_duration_since(self.opened_at) >= HEALTHY_FOR
+        {
+            self.tries = 0;
+        }
         match &self.capture {
             None => {
                 if self.retry_in > 0 {
@@ -357,7 +358,7 @@ impl Live {
                 self.tries += 1;
                 match (self.reopen)() {
                     Ok(opened) => {
-                        self.install(opened);
+                        self.install(opened, now);
                         Ok(())
                     }
                     Err(e) => self.reopen_failed(e),
@@ -373,8 +374,8 @@ impl Live {
                 match (self.reopen)() {
                     Ok(opened) => {
                         // O relógio continua; o intervalo da troca vira silêncio.
-                        self.close((env.now)());
-                        self.install(opened);
+                        self.close(now);
+                        self.install(opened, now);
                         Ok(())
                     }
                     Err(e) => {
@@ -416,7 +417,7 @@ impl Collector {
             }
             if !stopping && fatal.is_none() {
                 for s in &mut self.sources {
-                    if let Err(m) = s.maintain(tick, &self.env) {
+                    if let Err(m) = s.maintain(tick, &self.env, now) {
                         fatal.get_or_insert(m);
                     }
                 }
@@ -909,13 +910,13 @@ mod tests {
         assert!(!events.try_iter().any(|e| matches!(e, SessionEvent::Error { .. })));
     }
 
-    #[test]
-    fn source_that_recovers_keeps_recording_past_three_failures() {
+    /// A fonte cai logo no começo e cada reabertura fica de pé 6 s de relógio antes
+    /// de falhar de novo (com ou sem áudio); a quinta fica de pé até o fim.
+    fn recover_four_times(audio: bool) -> (Recorded, usize, Vec<SessionEvent>) {
         const FAILED: &str = "A captura do microfone falhou.";
         let clock = FakeClock::new();
         let (tx, opened, _) = fake_source(None);
-        // Cada reabertura entrega 6 s antes de falhar; a quinta fica de pé.
-        let (reopen, called, calls) = flaky_reopen(6, 4, FAILED);
+        let (reopen, new_sources, calls, _) = counting_reopen(None);
         let (sink, events) = sink();
         let session = Session::new(
             vec![spec(SourceKind::Mic, None, opened, reopen)],
@@ -925,12 +926,40 @@ mod tests {
         )
         .unwrap();
         tx.send(SourceMsg::Failed(FAILED.into())).unwrap();
-        while called.recv_timeout(WAIT).expect("reabriu de novo") < 5 {}
+        for _ in 0..4 {
+            let tx = new_sources.recv_timeout(WAIT).expect("reabriu de novo");
+            if audio {
+                feed(&tx, &clock, 6);
+            } else {
+                clock.advance(6.0);
+            }
+            // Dois eventos de nível: um ciclo inteiro viu a fonte de pé há 6 s.
+            for _ in 0..2 {
+                wait_for(&events, |e| matches!(e, SessionEvent::Level { .. }));
+            }
+            tx.send(SourceMsg::Failed(FAILED.into())).unwrap();
+        }
+        let _last = new_sources.recv_timeout(WAIT).expect("quinta reabertura");
         let out = session.stop().unwrap();
-        assert_eq!(calls.load(Ordering::SeqCst), 5);
-        assert!(!events.try_iter().any(|e| matches!(e, SessionEvent::Error { .. })));
-        // 5 × 6 s = 30 s: dois blocos e uma sobra.
-        assert_eq!(out.text, "b0 b1 b2");
+        (out, calls.load(Ordering::SeqCst), events.try_iter().collect())
+    }
+
+    #[test]
+    fn source_that_recovers_keeps_recording_past_three_failures() {
+        let (out, calls, events) = recover_four_times(true);
+        assert_eq!(calls, 5);
+        assert!(!events.iter().any(|e| matches!(e, SessionEvent::Error { .. })));
+        // 4 × 6 s = 24 s: dois blocos.
+        assert_eq!(out.text, "b0 b1");
+    }
+
+    #[test]
+    fn silent_reopened_source_still_resets_the_count() {
+        // Como o loopback do Windows sem nada tocando: de pé, mas sem pacotes.
+        let (out, calls, events) = recover_four_times(false);
+        assert_eq!(calls, 5);
+        assert!(!events.iter().any(|e| matches!(e, SessionEvent::Error { .. })));
+        assert_eq!(out.text, "");
     }
 
     #[test]

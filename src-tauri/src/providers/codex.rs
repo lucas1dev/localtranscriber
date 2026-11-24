@@ -37,6 +37,8 @@ pub enum AuthStatus {
     LoggedIn(String),
     LoggedOut,
     Missing,
+    /// O programa existe mas não pôde ser executado (ou não respondeu); a mensagem é para a pessoa.
+    Error(String),
 }
 
 impl Serialize for AuthStatus {
@@ -45,6 +47,7 @@ impl Serialize for AuthStatus {
             AuthStatus::LoggedIn(d) => ("logged_in", Some(d.as_str())),
             AuthStatus::LoggedOut => ("logged_out", None),
             AuthStatus::Missing => ("missing", None),
+            AuthStatus::Error(m) => ("error", Some(m.as_str())),
         };
         let mut st = serializer.serialize_struct("AuthStatus", 2)?;
         st.serialize_field("state", state)?;

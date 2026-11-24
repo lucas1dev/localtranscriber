@@ -65,6 +65,7 @@ pub fn assemble_status(
                         false,
                         "Codex embutido não encontrado — reinstale o app".into(),
                     ),
+                    AuthStatus::Error(m) => (false, m.clone()),
                 },
                 ProviderId::ClaudeCode => match (claude_enabled, claude) {
                     (false, _) => (false, "Desativado".into()),
@@ -75,6 +76,7 @@ pub fn assemble_status(
                         (false, "Claude Code não está logado".into())
                     }
                     (true, Some(AuthStatus::LoggedIn(d))) => (true, d.clone()),
+                    (true, Some(AuthStatus::Error(m))) => (false, m.clone()),
                 },
                 ProviderId::Ollama => {
                     if !ollama.running {
@@ -334,6 +336,10 @@ mod tests {
         assert_eq!(s[1].detail, "Claude Code não encontrado neste computador");
         let s = dto(&[], Some(&AuthStatus::LoggedOut), true, &off());
         assert_eq!(s[1].detail, "Claude Code não está logado");
+        let err = AuthStatus::Error("Não foi possível executar o Claude Code: x".into());
+        let s = dto(&[], Some(&err), true, &off());
+        assert!(!s[1].configured && s[1].enabled);
+        assert_eq!(s[1].detail, "Não foi possível executar o Claude Code: x");
     }
 
     #[test]

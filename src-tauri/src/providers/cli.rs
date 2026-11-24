@@ -157,6 +157,28 @@ pub fn failure(out: &CliOutput, label: &str, login_message: &str, prompt: &str) 
     AppError::Internal(format!("{label} falhou: {}", tail(detail, 600)))
 }
 
+#[cfg(all(test, windows))]
+mod windows_tests {
+    use super::*;
+
+    /// O Claude Code instalado pelo npm é um `claude.cmd`. O `Command` da std (Rust ≥ 1.77)
+    /// roda `.cmd`/`.bat` pelo `cmd.exe` escapando os argumentos; este teste confere isso,
+    /// inclusive argumento vazio (`--tools ""`) e stdin.
+    #[tokio::test]
+    async fn runs_cmd_shim_with_args_and_stdin() {
+        let tmp = tempfile::tempdir().unwrap();
+        let bin = tmp.path().join("claude.cmd");
+        std::fs::write(&bin, "@echo off\r\necho 1=[%~1] 2=[%~2] 3=[%~3]\r\nfindstr \"^\"\r\n").unwrap();
+        let args: [OsString; 3] = ["--tools".into(), "".into(), "a b, c.".into()];
+        let out = run("Claude Code", &bin, &args, &[], Some("entrada\n"), Duration::from_secs(30))
+            .await
+            .unwrap();
+        assert_eq!(out.code, 0, "{out:?}");
+        assert!(out.stdout.contains("1=[--tools] 2=[] 3=[a b, c.]"), "{out:?}");
+        assert!(out.stdout.contains("entrada"), "{out:?}");
+    }
+}
+
 #[cfg(all(test, unix))]
 pub(crate) mod tests {
     use super::*;

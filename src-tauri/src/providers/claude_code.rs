@@ -14,7 +14,7 @@
 //! Nunca roda `claude login` nem lê arquivos de credencial.
 
 use std::collections::HashMap;
-use std::ffi::OsString;
+use std::ffi::{OsStr, OsString};
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
@@ -32,6 +32,28 @@ const LOGIN_REQUIRED: &str =
 const STATUS_TIMEOUT: Duration = Duration::from_secs(30);
 const EXEC_TIMEOUT: Duration = Duration::from_secs(15 * 60);
 const HELP_TIMEOUT: Duration = Duration::from_secs(15);
+
+/// Pastas que entram na frente do PATH herdado: a do próprio `claude` e as do Homebrew.
+/// Aberto pelo Finder, o app herda um PATH mínimo, e os shims `#!/usr/bin/env node` do
+/// npm não achariam o `node`.
+pub fn child_path(bin: &Path, inherited: Option<&OsStr>) -> OsString {
+    let mut dirs: Vec<PathBuf> = bin.parent().map(Path::to_path_buf).into_iter().collect();
+    dirs.push("/opt/homebrew/bin".into());
+    dirs.push("/usr/local/bin".into());
+    if let Some(p) = inherited {
+        dirs.extend(std::env::split_paths(p));
+    }
+    std::env::join_paths(dirs).unwrap_or_else(|_| inherited.unwrap_or_default().to_owned())
+}
+
+/// Variáveis de ambiente do processo do Claude Code.
+fn child_env(bin: &Path) -> Vec<(OsString, OsString)> {
+    if cfg!(windows) {
+        return Vec::new();
+    }
+    let path = child_path(bin, std::env::var_os("PATH").as_deref());
+    vec![("PATH".into(), path)]
+}
 
 /// Argumentos de `claude -p`. `safe_mode`: o `claude` aceita `--safe-mode`.
 pub fn exec_args(system: &str, model: Option<&str>, safe_mode: bool) -> Vec<OsString> {
@@ -72,7 +94,8 @@ pub async fn supports_safe_mode(bin: &Path) -> bool {
         return known;
     }
     let args = [OsString::from("--help")];
-    let supported = match cli::run("Claude Code", bin, &args, &[], None, HELP_TIMEOUT).await {
+    let env = child_env(bin);
+    let supported = match cli::run("Claude Code", bin, &args, &env, None, HELP_TIMEOUT).await {
         Ok(out) => out.code == 0 && out.stdout.contains("--safe-mode"),
         Err(_) => false,
     };
@@ -103,9 +126,10 @@ impl ClaudeCode {
             return AuthStatus::Missing;
         }
         let args = [OsString::from("auth"), OsString::from("status")];
-        let Ok(out) = cli::run("Claude Code", &self.bin, &args, &[], None, STATUS_TIMEOUT).await
-        else {
-            return AuthStatus::LoggedOut;
+        let env = child_env(&self.bin);
+        let out = match cli::run("Claude Code", &self.bin, &args, &env, None, STATUS_TIMEOUT).await {
+            Ok(out) => out,
+            Err(e) => return AuthStatus::Error(e.to_string()),
         };
         let Ok(json) = serde_json::from_str::<serde_json::Value>(out.stdout.trim()) else {
             return AuthStatus::LoggedOut;
@@ -144,7 +168,7 @@ impl Llm for ClaudeCodeLlm {
             "Claude Code",
             &self.bin,
             &args,
-            &[],
+            &child_env(&self.bin),
             Some(workdir.path()),
             Some(user),
             EXEC_TIMEOUT,
@@ -226,10 +250,58 @@ mod tests {
         assert!(!args.contains(&"--safe-mode") && !args.contains(&"--bare"));
     }
 
+    #[test]
+    fn child_path_puts_bin_dir_and_homebrew_first() {
+        let bin = Path::new("/Users/x/.npm-global/bin/claude");
+        let want = std::env::join_paths([
+            "/Users/x/.npm-global/bin",
+            "/opt/homebrew/bin",
+            "/usr/local/bin",
+            "/usr/bin",
+            "/bin",
+        ])
+        .unwrap();
+        let inherited = std::env::join_paths(["/usr/bin", "/bin"]).unwrap();
+        assert_eq!(child_path(bin, Some(&inherited)), want);
+        let want = std::env::join_paths(["/Users/x/.npm-global/bin", "/opt/homebrew/bin", "/usr/local/bin"]).unwrap();
+        assert_eq!(child_path(bin, None), want);
+    }
+
     #[cfg(unix)]
     mod unix {
         use super::*;
         use crate::providers::cli::tests::script;
+
+        #[tokio::test]
+        async fn status_spawn_failure_is_not_logged_out() {
+            let tmp = tempfile::tempdir().unwrap();
+            // Shim de npm cujo interpretador não existe.
+            let bin = tmp.path().join("claude");
+            std::fs::write(&bin, "#!/nao/existe/node\n").unwrap();
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+            match (ClaudeCode { bin }).status().await {
+                AuthStatus::Error(m) => {
+                    assert!(m.starts_with("Não foi possível executar o Claude Code: "), "{m}")
+                }
+                other => panic!("esperava Error, veio {other:?}"),
+            }
+        }
+
+        #[tokio::test]
+        async fn child_gets_bin_dir_on_path() {
+            let tmp = tempfile::tempdir().unwrap();
+            let log = tmp.path().join("path.txt");
+            let bin = script(
+                tmp.path(),
+                "claude",
+                &format!(r#"echo "$PATH" > "{}"; echo '{{"loggedIn": true}}'"#, log.display()),
+            );
+            ClaudeCode { bin }.status().await;
+            let path = std::fs::read_to_string(&log).unwrap();
+            let want = format!("{}:/opt/homebrew/bin:/usr/local/bin:", tmp.path().display());
+            assert!(path.starts_with(&want), "{path}");
+        }
 
         #[tokio::test]
         async fn safe_mode_detected_once_from_help() {

@@ -33,15 +33,21 @@ pub fn find_executable(
     if let Some(p) = path_var {
         dirs.extend(std::env::split_paths(&p));
     }
-    let candidates: &[String] = &if cfg!(windows) {
-        vec![name.to_string(), format!("{name}.exe"), format!("{name}.cmd")]
-    } else {
-        vec![name.to_string()]
-    };
+    let candidates = executable_names(name, cfg!(windows));
     dirs.iter()
         .filter(|d| !d.as_os_str().is_empty())
         .flat_map(|d| candidates.iter().map(move |c| d.join(c)))
         .find(|f| is_executable(f))
+}
+
+/// Nomes de arquivo aceitos para `name`. No Windows só `.exe` e `.cmd`: o shim sem
+/// extensão que o npm instala é um script de shell e não roda fora do Git Bash.
+pub fn executable_names(name: &str, windows: bool) -> Vec<String> {
+    if windows {
+        vec![format!("{name}.exe"), format!("{name}.cmd")]
+    } else {
+        vec![name.to_string()]
+    }
 }
 
 fn is_executable(f: &Path) -> bool {
@@ -148,6 +154,24 @@ mod tests {
         let f = tmp.path().join("claude");
         fs::write(&f, "x").unwrap();
         assert!(find_executable("claude", &[tmp.path().to_path_buf()], Some("".into())).is_none());
+    }
+
+    #[test]
+    fn executable_names_on_windows_only_exe_and_cmd() {
+        assert_eq!(executable_names("claude", true), ["claude.exe", "claude.cmd"]);
+        assert_eq!(executable_names("claude", false), ["claude"]);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn find_executable_skips_extensionless_npm_shim() {
+        let tmp = tempfile::tempdir().unwrap();
+        fs::write(tmp.path().join("claude"), "#!/bin/sh\n").unwrap();
+        let want = make_exe(tmp.path(), "claude.cmd");
+        assert_eq!(
+            find_executable("claude", &[tmp.path().to_path_buf()], Some("".into())),
+            Some(want)
+        );
     }
 
     #[test]

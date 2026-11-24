@@ -4,6 +4,13 @@ import { closeSettings, goTo, openSettings } from '../flow.js';
 const STEPS = ['① Áudio', '② Transcrição', '③ Resumo'];
 export const JOB_LABEL = { file: 'Transcrevendo…', mic: 'Gravando…', summary: 'Resumindo…', compare: 'Comparando…' };
 
+// Rótulo do trabalho em andamento; a gravação que está parando mostra "Finalizando…".
+export function jobLabel(job) {
+  if (job.kind === 'mic' && job.stopping) return 'Finalizando…';
+  const base = JOB_LABEL[job.kind] || 'Processando…';
+  return job.percent != null && job.kind === 'file' ? `${base} ${job.percent}%` : base;
+}
+
 export function mountHeader(root, store) {
   const title = h('span', { class: 'brand', text: 'Local Transcriber' });
   const nav = h('nav', { class: 'steps', 'aria-label': 'Passos' });
@@ -35,10 +42,7 @@ export function mountHeader(root, store) {
       else b.removeAttribute('aria-current');
     });
     jobBadge.hidden = s.job === null;
-    if (s.job) {
-      const base = JOB_LABEL[s.job.kind] || 'Processando…';
-      jobBadge.textContent = s.job.percent != null && s.job.kind === 'file' ? `${base} ${s.job.percent}%` : base;
-    }
+    if (s.job) jobBadge.textContent = jobLabel(s.job);
   };
   render(store.get());
   store.subscribe(render);

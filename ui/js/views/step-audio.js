@@ -253,6 +253,8 @@ export function mountStepAudio(root, store) {
     if (ui.micStopping || !recorder) return;
     ui.micStopping = true;
     stopClock();
+    const job = store.get().job;
+    if (job?.kind === 'mic') store.set({ job: { ...job, stopping: true } });
     render();
     const r = recorder;
     const finish = () => { ui.micRunning = ui.micStopping = false; recorder = null; };

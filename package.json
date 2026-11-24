@@ -7,7 +7,7 @@
   },
   "scripts": {
     "tauri": "tauri",
-    "test:ui": "node --test ui/tests/"
+    "test:ui": "node --test \"ui/tests/*.test.js\""
   },
   "repository": {
     "type": "git",
@@ -16,7 +16,7 @@
   "keywords": [],
   "author": "",
   "license": "ISC",
-  "type": "commonjs",
+  "type": "module",
   "bugs": {
     "url": "https://github.com/lucas1dev/localtranscriber/issues"
   },

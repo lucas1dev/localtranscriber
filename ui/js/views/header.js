@@ -2,7 +2,7 @@ import { h } from '../dom.js';
 import { closeSettings, goTo, openSettings } from '../flow.js';
 
 const STEPS = ['① Áudio', '② Transcrição', '③ Resumo'];
-const JOB_LABEL = { file: 'Transcrevendo…', mic: 'Gravando…', summary: 'Resumindo…' };
+export const JOB_LABEL = { file: 'Transcrevendo…', mic: 'Gravando…', summary: 'Resumindo…', compare: 'Comparando…' };
 
 export function mountHeader(root, store) {
   const title = h('span', { class: 'brand', text: 'Local Transcriber' });

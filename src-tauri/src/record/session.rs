@@ -35,8 +35,15 @@ const MAX_TRIES: u32 = 3;
 /// `Failed`, para zerar a contagem. Uma fonte que abre e logo falha de novo
 /// continua contando; um loopback mudo do Windows, que não manda pacotes, não.
 const HEALTHY_FOR: Duration = Duration::from_secs(5);
-/// Ciclos de espera entre uma tentativa de reabrir e a próxima (500 ms).
+/// Ciclos de espera antes da primeira tentativa de reabrir (500 ms); dobra a cada
+/// tentativa seguida.
 const RETRY_TICKS: u32 = 5;
+
+/// Ciclos de espera antes da próxima tentativa, com `tries` tentativas já feitas.
+/// O ciclo da coleta conta: a espera real fica a até 100 ms disso.
+fn retry_ticks(tries: u32) -> u32 {
+    RETRY_TICKS << tries.min(MAX_TRIES)
+}
 /// Sem áudio novo por tantos ciclos, o nível cai para zero (500 ms).
 const LEVEL_HOLD_TICKS: u32 = 5;
 
@@ -343,13 +350,13 @@ impl Live {
         if self.tries >= MAX_TRIES {
             return Err(message);
         }
-        self.retry_in = 0;
+        self.retry_in = retry_ticks(self.tries);
         Ok(())
     }
 
     /// Erro quando acabam as tentativas; senão espera para tentar de novo.
     fn reopen_failed(&mut self, err: AppError) -> Result<(), String> {
-        self.retry_in = RETRY_TICKS;
+        self.retry_in = retry_ticks(self.tries);
         if self.tries >= MAX_TRIES {
             Err(err.to_string())
         } else {
@@ -506,7 +513,7 @@ mod tests {
     use crate::transcribe::format_ts;
 
     const MIC_GONE: &str = "O microfone foi desconectado.";
-    const WAIT: Duration = Duration::from_secs(5);
+    const WAIT: Duration = Duration::from_secs(10);
     const SECOND: usize = 16_000;
 
     /// Relógio que só anda quando o teste manda.
@@ -907,14 +914,20 @@ mod tests {
     }
 
     #[test]
+    fn retry_delays_double_from_half_a_second() {
+        // Ciclos de 100 ms antes da 1ª, 2ª e 3ª tentativa: 0,5 s, 1 s, 2 s.
+        assert_eq!([0, 1, 2].map(retry_ticks), [5, 10, 20]);
+    }
+
+    #[test]
     fn system_failure_gives_up_after_three_tries() {
         let clock = FakeClock::new();
         let (tx, opened, _) = fake_source(None);
-        let calls = Arc::new(AtomicUsize::new(0));
+        let calls = Arc::new(Mutex::new(Vec::new()));
         let reopen: Reopen = {
             let calls = calls.clone();
             Box::new(move || {
-                calls.fetch_add(1, Ordering::SeqCst);
+                calls.lock().unwrap().push(Instant::now());
                 Err(AppError::User("Nenhuma saída de som encontrada.".into()))
             })
         };
@@ -928,10 +941,17 @@ mod tests {
         )
         .unwrap();
         feed(&tx, &clock, 12);
+        let failed_at = Instant::now();
         tx.send(SourceMsg::Failed("A captura do som do computador falhou.".into())).unwrap();
         let e = wait_for(&events, |e| matches!(e, SessionEvent::Error { .. }));
         assert_eq!(e, SessionEvent::Error { message: "Nenhuma saída de som encontrada.".into() });
-        assert_eq!(calls.load(Ordering::SeqCst), 3);
+        let calls = calls.lock().unwrap().clone();
+        assert_eq!(calls.len(), 3);
+        // Espera 0,5 s, 1 s e 2 s antes de cada tentativa (com folga de um ciclo).
+        let gaps = [calls[0] - failed_at, calls[1] - calls[0], calls[2] - calls[1]];
+        for (gap, min_ms) in gaps.iter().zip([400, 900, 1900]) {
+            assert!(gap.as_millis() >= min_ms, "intervalos {gaps:?}");
+        }
         assert_eq!(session.stop().unwrap().text, "b0");
     }
 
@@ -1004,6 +1024,7 @@ mod tests {
         )
         .unwrap();
         tx.send(SourceMsg::Failed(FAILED.into())).unwrap();
+        let mut seen = Vec::new();
         for _ in 0..4 {
             let tx = new_sources.recv_timeout(WAIT).expect("reabriu de novo");
             if audio {
@@ -1011,15 +1032,25 @@ mod tests {
             } else {
                 clock.advance(6.0);
             }
-            // Dois eventos de nível: um ciclo inteiro viu a fonte de pé há 6 s.
-            for _ in 0..2 {
-                wait_for(&events, |e| matches!(e, SessionEvent::Level { .. }));
-            }
+            full_tick(&events, &mut seen); // um ciclo inteiro viu a fonte de pé há 6 s
             tx.send(SourceMsg::Failed(FAILED.into())).unwrap();
         }
         let _last = new_sources.recv_timeout(WAIT).expect("quinta reabertura");
         let out = session.stop().unwrap();
-        (out, calls.load(Ordering::SeqCst), events.try_iter().collect())
+        seen.extend(events.try_iter());
+        (out, calls.load(Ordering::SeqCst), seen)
+    }
+
+    /// Espera um ciclo inteiro da coleta começar e terminar depois desta chamada:
+    /// descarta (guardando em `seen`) os eventos já na fila e espera dois de nível.
+    fn full_tick(events: &Receiver<SessionEvent>, seen: &mut Vec<SessionEvent>) {
+        seen.extend(events.try_iter());
+        let mut levels = 0;
+        while levels < 2 {
+            let e = events.recv_timeout(WAIT).expect("ciclo da coleta");
+            levels += usize::from(matches!(e, SessionEvent::Level { .. }));
+            seen.push(e);
+        }
     }
 
     #[test]

@@ -1,9 +1,13 @@
 mod commands;
+#[allow(dead_code)]
+mod credentials;
 pub mod error;
 #[allow(dead_code)]
 mod models;
 #[allow(dead_code)]
 mod paths;
+#[allow(dead_code)]
+pub mod providers;
 #[allow(dead_code)]
 mod settings;
 #[allow(dead_code)]

@@ -1,16 +1,24 @@
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 use std::path::Path;
 
 use crate::error::AppError;
+use crate::providers::ProviderId;
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 #[serde(default)]
 pub struct Settings {
     pub default_model: String,
     pub default_language: String,
-    pub summary_provider: Option<String>,
+    #[serde(deserialize_with = "lenient_provider")]
+    pub summary_provider: Option<ProviderId>,
     pub summary_style: String,
     pub claude_code_enabled: bool,
+}
+
+/// Um valor desconhecido (ou de tipo errado) vira `None` em vez de invalidar o arquivo todo.
+fn lenient_provider<'de, D: Deserializer<'de>>(d: D) -> Result<Option<ProviderId>, D::Error> {
+    let v = serde_json::Value::deserialize(d)?;
+    Ok(serde_json::from_value(v).ok())
 }
 
 impl Default for Settings {
@@ -83,12 +91,22 @@ mod tests {
         let p = tmp.path().join("s.json");
         let s = Settings {
             default_model: "small".into(),
-            summary_provider: Some("codex".into()),
+            summary_provider: Some(ProviderId::Codex),
             claude_code_enabled: true,
             ..Settings::default()
         };
         save(&p, &s).unwrap();
         assert_eq!(load(&p), s);
         assert!(!tmp.path().join("s.json.tmp").exists());
+    }
+
+    #[test]
+    fn unknown_summary_provider_becomes_none() {
+        let tmp = tempfile::tempdir().unwrap();
+        let p = tmp.path().join("s.json");
+        fs::write(&p, r#"{"default_language":"pt","summary_provider":"antigo"}"#).unwrap();
+        let s = load(&p);
+        assert_eq!(s.summary_provider, None);
+        assert_eq!(s.default_language, "pt");
     }
 }

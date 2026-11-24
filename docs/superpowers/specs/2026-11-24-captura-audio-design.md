@@ -1,6 +1,6 @@
 # Captura de áudio: escolher microfone e gravar o som do computador
 
-Status: rascunho para aprovação do autor.
+Status: aprovado pelo autor (2026-11-24), com o indicador visual de gravação acrescentado a pedido dele.
 
 ## Intenção
 
@@ -99,6 +99,7 @@ O motivo é transcrever e resumir reuniões. Saber o que foi dito por você e o 
 - `stop_recording() -> Transcript`
   - Resolve depois de transcrever o que ainda está na fila.
 - Evento `record://text { speaker: Option<"voce" | "reuniao">, text }` a cada bloco transcrito.
+- Evento `record://level { mic, system }` cerca de 10 vezes por segundo, para as barras de nível.
 - Evento `record://error { message }` quando uma fonte falha no meio da gravação. Depois disso a gravação para.
 - `Segment` ganha `speaker: Option<String>`. Fica `None` em arquivo, só microfone e só som do computador; recebe o valor no modo duplo.
 - Saem `transcribe_chunk` e `ui/js/mic.js` (o caminho via `MediaRecorder`).
@@ -127,13 +128,22 @@ Fonte:   (•) Microfone   ( ) Som do computador   ( ) Microfone + som do comput
 Microfone: [ MacBook Pro Microfone (padrão)  ▾ ]      ← some no modo "Som do computador"
 ⓘ Use fone de ouvido para a fala dos outros não ser gravada duas vezes.   ← só no modo duplo
 
-00:42
+● Gravando  00:42                         ← bolinha vermelha pulsando
+Você     ▮▮▮▮▮▯▯▯▯▯                       ← nível de cada fonte ativa, ao vivo
+Reunião  ▮▮▯▯▯▯▯▯▯▯
 Você: Bom dia, vamos começar pela pauta.
 Reunião: Oi, tudo bem? Eu trouxe os números.
 
 [ Parar ]
 ```
 
+- **Indicador de gravação** (pedido do autor):
+  - Enquanto grava, aparece uma bolinha vermelha pulsando com "Gravando" ao lado do cronômetro.
+  - Abaixo vem uma barra de nível por fonte ativa ("Você" e/ou "Reunião"), atualizada umas 10 vezes por segundo pelo evento `record://level { mic: f32 | null, system: f32 | null }`, com valores de 0 a 1 (pico ou RMS do último intervalo).
+  - A barra de "Reunião" parada mostra que não está saindo som do computador. A de "Você" parada mostra que o microfone escolhido não está captando.
+  - No estado "Finalizando…" (esvaziando a fila), a bolinha para de pulsar e as barras somem.
+  - O cabeçalho do app, que já mostra o trabalho em andamento, diz "Gravando…" enquanto a gravação estiver ativa.
+  - Com "reduzir movimento" ativado no sistema (`prefers-reduced-motion`), a bolinha fica acesa, sem pulsar.
 - Sem suporte a som do computador, as duas opções aparecem desativadas, com o motivo em texto pequeno.
 - A lista de microfones é carregada ao abrir a aba. Um botão ↻ recarrega a lista.
 - A fonte e o microfone escolhidos ficam salvos em `Settings`:

@@ -10,12 +10,19 @@ O app ainda não é assinado digitalmente, então o sistema avisa na primeira ab
 
 **macOS (Gatekeeper):** arraste o app para Aplicativos, clique com o botão direito nele e escolha **Abrir**, depois confirme em **Abrir**. Se o macOS bloquear mesmo assim, abra **Ajustes do Sistema → Privacidade e Segurança**, role até a mensagem sobre o app e clique em **Abrir mesmo assim**.
 
+Se nada disso aparecer e o macOS disser que o app "está danificado e não pode ser aberto" (acontece com apps baixados pelo navegador que não têm assinatura da Apple), tire a marca de quarentena no Terminal e abra de novo. Use só com o app baixado da página de Releases deste repositório:
+
+```sh
+xattr -dr com.apple.quarantine "/Applications/Local Transcriber.app"
+```
+
 **Windows (SmartScreen):** na tela "O Windows protegeu seu computador", clique em **Mais informações** e depois em **Executar assim mesmo**.
 
 ## Primeiro uso
 
 1. Abra **Configurações → Transcrição** e baixe um modelo Whisper (os maiores são mais precisos e mais lentos).
 2. Volte para a tela inicial, importe um áudio ou grave pelo microfone e transcreva.
+3. Exporte a transcrição em TXT ou SRT, ou o resumo em `.md`: o app pergunta onde salvar o arquivo.
 
 A transcrição roda 100% no seu computador, sem internet depois que o modelo é baixado.
 
@@ -23,7 +30,7 @@ A transcrição roda 100% no seu computador, sem internet depois que o modelo é
 
 Resumir é opcional. Configure em **Configurações**:
 
-- **ChatGPT:** entre com a sua conta pelo login embutido (usa o Codex CLI que acompanha o app).
+- **ChatGPT:** entre com a sua conta pelo login embutido (usa o Codex CLI que acompanha o app). No Windows, o **Entrar com ChatGPT** ainda não foi verificado.
 - **Chaves de API (OpenAI, Anthropic, Gemini):** cole a sua chave. **Atenção: o uso da API é cobrado pelo provedor, na sua conta.**
 - **Claude Code (opcional):** se você já tem o Claude Code instalado e logado, o app pode usá-lo. **Ele usa o plano da própria pessoa** (os limites e a cobrança são os da sua assinatura).
 - **Ollama:** resumos locais, sem enviar nada para a nuvem. Instale o [Ollama](https://ollama.com/download) e baixe um modelo pelo app.

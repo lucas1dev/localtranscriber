@@ -35,7 +35,8 @@
     "externalBin": ["binaries/ffmpeg", "binaries/codex"],
     "macOS": {
       "minimumSystemVersion": "11.0",
-      "infoPlist": "Info.plist"
+      "infoPlist": "Info.plist",
+      "signingIdentity": "-"
     }
   }
 }

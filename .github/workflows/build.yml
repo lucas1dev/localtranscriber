@@ -76,8 +76,6 @@ jobs:
 
       - name: Verifica sidecars (Windows)
         if: runner.os == 'Windows'
-        # TEMPORARIO: so para validar os passos seguintes; sera revertido.
-        continue-on-error: true
         shell: pwsh
         run: ./scripts/verify-sidecars.ps1
 

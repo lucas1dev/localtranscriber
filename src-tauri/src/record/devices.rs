@@ -31,7 +31,7 @@ const DELIVER_RETRY: Duration = Duration::from_millis(5);
 pub(super) const MIC_GONE: &str = "O microfone foi desconectado.";
 const OUTPUT_GONE: &str = "A saída de som foi desconectada.";
 pub(super) const SYSTEM_PERMISSION: &str = "Permita a gravação do som do computador em Ajustes do Sistema → Privacidade e Segurança → Gravação de áudio do sistema e tente de novo.";
-const MIC_PERMISSION: &str = "Permita a gravação do microfone em Ajustes do Sistema → Privacidade e Segurança → Microfone e tente de novo.";
+pub(super) const MIC_PERMISSION: &str = "Permita a gravação do microfone em Ajustes do Sistema → Privacidade e Segurança → Microfone e tente de novo.";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct AudioInput {

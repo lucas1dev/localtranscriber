@@ -10,6 +10,7 @@ use tauri::{AppHandle, Emitter, State};
 use crate::commands::transcription::{claim_slot, validate_request, SlotGuard};
 use crate::error::AppError;
 use crate::record::devices::{self, AudioInput, OpenSource, SourceKind, SourceMsg};
+use crate::record::permissions;
 use crate::record::session::{
     Env, Opened, Reopen, Session, SessionEvent, Sink, SourceSpec, Transcriber,
 };
@@ -118,6 +119,8 @@ fn begin(
     let mic_id = if mode == Mode::System {
         None
     } else {
+        // No macOS um microfone negado só manda silêncio: confere antes de abrir.
+        permissions::ensure_mic()?;
         let inputs = devices::list_inputs()?;
         let chosen = devices::resolve_mic(&inputs, mic_id.as_deref())
             .ok_or_else(|| AppError::User("Nenhum microfone encontrado.".into()))?;

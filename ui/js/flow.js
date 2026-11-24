@@ -41,9 +41,11 @@ function isEmptyTranscript(transcript) {
   return transcript.segments.length === 0 && transcript.text.trim() === '';
 }
 
+export const NO_SPEECH = 'Nenhuma fala detectada no áudio.';
+
 export function afterTranscribe(state, transcript) {
   if (isEmptyTranscript(transcript)) {
-    return { job: null, step: 1, error: 'Nenhuma fala detectada no áudio.' };
+    return { job: null, step: 1, error: NO_SPEECH };
   }
   return {
     job: null,

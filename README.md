@@ -34,11 +34,11 @@ Na aba **Gravar** do passo ①, escolha a fonte:
 - **Som do computador:** grava o que está tocando no computador (reunião, vídeo, aula).
 - **Microfone + som do computador:** grava os dois ao mesmo tempo. No texto, cada fala vem etiquetada: **Você** (microfone) e **Reunião** (som do computador). As etiquetas também aparecem nas legendas SRT e no texto enviado para o resumo.
 
-Enquanto grava, uma bolinha vermelha pulsa ao lado do cronômetro e uma barra de nível por fonte mostra se há som entrando. Barra parada em "Reunião" significa que nada está tocando no computador; parada em "Você", que o microfone não está captando.
+Enquanto grava, uma bolinha vermelha pulsa ao lado do cronômetro e uma barra de nível por fonte mostra se há som entrando. Barra parada em "Reunião" significa que nada está tocando no computador ou, no macOS, que falta a permissão para gravar o som do computador; parada em "Você", que o microfone não está captando ou não tem permissão.
 
 **Dica:** use fone de ouvido. Sem fone, o microfone capta a fala dos outros saindo pelo alto-falante e ela é gravada duas vezes.
 
-**macOS:** na primeira vez que gravar o som do computador, o macOS pede a permissão **Gravação de áudio do sistema**. Se você negar, ou quiser mudar depois, vá em **Ajustes do Sistema → Privacidade e Segurança**. Isso exige macOS 14.6 ou mais novo. No Windows não há pedido de permissão.
+**macOS:** na primeira vez que gravar, o macOS pede a permissão **Microfone** (para o microfone) e **Gravação de áudio do sistema** (para o som do computador). Se você negar, ou quiser mudar depois, vá em **Ajustes do Sistema → Privacidade e Segurança**. Com o microfone negado, o app avisa antes de começar. Com a gravação do som do computador negada, o macOS pode entregar silêncio em vez de um erro: a barra "Reunião" fica parada e o app sugere conferir a permissão. Isso exige macOS 14.6 ou mais novo. No Windows não há pedido de permissão.
 
 **Fones Bluetooth:** quando o microfone do fone está em uso, o Bluetooth costuma passar para a qualidade de chamada e o som piora. Para uma qualidade melhor, grave com o microfone do computador e use o fone só para ouvir.
 

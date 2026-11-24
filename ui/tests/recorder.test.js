@@ -2,7 +2,9 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   SPEAKER_LABEL, liveLine, levelPercent, pickSource, showMicPicker, showHeadphoneHint, pickMicId, createRecorder,
+  isMacUserAgent, silenceHint, showSilenceHint, SILENCE_HINT, SILENCE_HINT_MS, afterRecording,
 } from '../js/recorder.js';
+import { afterTranscribe, initialState } from '../js/flow.js';
 
 test('SPEAKER_LABEL', () => assert.deepEqual(SPEAKER_LABEL, { voce: 'Você', reuniao: 'Reunião' }));
 
@@ -111,4 +113,41 @@ test('start que falha solta os ouvintes e repassa o erro', async () => {
   await assert.rejects(rec.start({ source: 'mic', micId: null, model: 'm', language: 'pt' }), /boom/);
   assert.equal(f.off.length, 3);
   assert.equal(rec.starting, false);
+});
+
+test('isMacUserAgent reconhece o WebKit do macOS', () => {
+  assert.equal(isMacUserAgent('Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15'), true);
+  assert.equal(isMacUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Edg/120'), false);
+  assert.equal(isMacUserAgent(undefined), false);
+});
+
+test('silenceHint: Reunião em zero por 12 s desde o começo', () => {
+  assert.equal(SILENCE_HINT_MS, 12_000);
+  assert.equal(silenceHint({ peak: 0, elapsedMs: 11_999 }), false);
+  assert.equal(silenceHint({ peak: 0, elapsedMs: 12_000 }), true);
+  assert.equal(silenceHint({ peak: 0.009, elapsedMs: 30_000 }), true);
+  // Some assim que o nível sobe, e não volta.
+  assert.equal(silenceHint({ peak: 0.01, elapsedMs: 30_000 }), false);
+  assert.equal(silenceHint({ peak: 0.5, elapsedMs: 12_000 }), false);
+});
+
+test('silenceHint só no macOS e com o som do computador', () => {
+  assert.equal(showSilenceHint({ mac: true, source: 'system', peak: 0, elapsedMs: 13_000 }), true);
+  assert.equal(showSilenceHint({ mac: true, source: 'both', peak: 0, elapsedMs: 13_000 }), true);
+  assert.equal(showSilenceHint({ mac: true, source: 'mic', peak: 0, elapsedMs: 13_000 }), false);
+  assert.equal(showSilenceHint({ mac: false, source: 'system', peak: 0, elapsedMs: 13_000 }), false);
+  assert.equal(SILENCE_HINT, 'Nada do som do computador até agora. Se algo está tocando, confira Ajustes do Sistema → Privacidade e Segurança → Gravação de áudio do sistema.');
+});
+
+test('afterRecording: sem fala no macOS com som do computador lembra a permissão', () => {
+  const empty = { text: '', segments: [] };
+  const job = { ...initialState, job: { kind: 'mic' } };
+  const hint = 'Nenhuma fala detectada no áudio. Se o som do computador não foi captado, confira a permissão em Ajustes do Sistema → Privacidade e Segurança → Gravação de áudio do sistema.';
+  assert.equal(afterRecording(job, empty, { mac: true, source: 'system' }).error, hint);
+  assert.equal(afterRecording(job, empty, { mac: true, source: 'both' }).error, hint);
+  assert.equal(afterRecording(job, empty, { mac: true, source: 'mic' }).error, 'Nenhuma fala detectada no áudio.');
+  assert.equal(afterRecording(job, empty, { mac: false, source: 'both' }).error, 'Nenhuma fala detectada no áudio.');
+  // Com fala, igual ao arquivo.
+  const t = { text: 'oi', segments: [] };
+  assert.deepEqual(afterRecording(job, t, { mac: true, source: 'both' }), afterTranscribe(job, t));
 });

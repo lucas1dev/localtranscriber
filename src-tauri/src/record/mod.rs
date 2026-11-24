@@ -5,6 +5,7 @@ pub mod devices;
 #[cfg(target_os = "macos")]
 mod mac_tap;
 pub mod merge;
+pub mod permissions;
 pub mod resample;
 pub mod session;
 pub mod track;

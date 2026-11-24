@@ -5,7 +5,8 @@ import {
   afterTranscribe, failJob, needsReplaceConfirm, openSettings, pasteText, startJob,
 } from '../flow.js';
 import {
-  SPEAKER_LABEL, createRecorder, levelPercent, liveLine, pickMicId, pickSource, showHeadphoneHint, showMicPicker,
+  SILENCE_HINT, SPEAKER_LABEL, afterRecording, createRecorder, isMacUserAgent, levelPercent, liveLine, pickMicId,
+  pickSource, showHeadphoneHint, showMicPicker, showSilenceHint,
 } from '../recorder.js';
 
 export const LANGUAGES = [
@@ -22,9 +23,12 @@ const toTranscript = (t) => ({
 });
 
 export function mountStepAudio(root, store) {
+  const mac = isMacUserAgent(navigator.userAgent);
   const ui = {
     tab: 'file', path: null, model: '', language: null, confirming: false, micRunning: false, micStopping: false, starting: false, elapsed: 0,
     source: null, inputs: [], micId: null, inputsLoaded: false,
+    // Gravação em andamento: fonte usada, quando começou e o maior nível de Reunião.
+    recSource: null, startedAt: 0, systemPeak: 0,
   };
   let recorder = null;
   let clockTimer = null;
@@ -66,9 +70,10 @@ export function mountStepAudio(root, store) {
     reuniao: h('div', { class: 'level-row' }, h('span', { text: SPEAKER_LABEL.reuniao }), h('div', { class: 'level-track' }, levelFills.reuniao)),
   };
   const levels = h('div', { class: 'levels' }, levelRows.voce, levelRows.reuniao);
+  const silenceNote = h('div', { class: 'hint', text: SILENCE_HINT, hidden: true });
   const micLive = h('div', { class: 'mic-live', 'aria-live': 'polite' });
   const micBtn = h('button', { class: 'btn primary', type: 'button', onClick: toggleMic });
-  const micPane = h('div', { class: 'pane' }, setupBox, recStatus, levels, micLive, micBtn);
+  const micPane = h('div', { class: 'pane' }, setupBox, recStatus, levels, silenceNote, micLive, micBtn);
 
   const modelSel = h('select', { id: 'model-sel', onChange: () => { ui.model = modelSel.value; render(); } });
   const langSel = h('select', { id: 'lang-sel', onChange: () => { ui.language = langSel.value; } },
@@ -172,6 +177,14 @@ export function mountStepAudio(root, store) {
   function setLevels(p) {
     levelFills.voce.style.width = `${levelPercent(p?.mic)}%`;
     levelFills.reuniao.style.width = `${levelPercent(p?.system)}%`;
+    if (typeof p?.system === 'number') ui.systemPeak = Math.max(ui.systemPeak, p.system);
+    syncSilenceNote();
+  }
+
+  function syncSilenceNote() {
+    silenceNote.hidden = !(ui.micRunning && !ui.micStopping && showSilenceHint({
+      mac, source: ui.recSource, peak: ui.systemPeak, elapsedMs: Date.now() - ui.startedAt,
+    }));
   }
 
   function appendLive(p) {
@@ -205,6 +218,8 @@ export function mountStepAudio(root, store) {
       },
     });
     const source = ui.source || pickSource(store.get().settings);
+    ui.recSource = source;
+    ui.systemPeak = 0;
     ui.starting = true;
     render();
     let pending;
@@ -223,6 +238,7 @@ export function mountStepAudio(root, store) {
       store.set({ settings: { ...cur, record_source: source, record_mic_id: showMicPicker(source) ? ui.micId : cur.record_mic_id } });
     }
     ui.micRunning = true;
+    ui.startedAt = Date.now();
     ui.elapsed = 0;
     clockTimer = setInterval(() => { ui.elapsed += 1; micTime.textContent = clock(ui.elapsed); }, 1000);
     render();
@@ -240,7 +256,7 @@ export function mountStepAudio(root, store) {
     try {
       const result = toTranscript(await r.stop());
       finish();
-      const patch = afterTranscribe(store.get(), result);
+      const patch = afterRecording(store.get(), result, { mac, source: ui.recSource });
       store.set(keep() ? { ...patch, error: keep() } : patch);
     } catch (e) {
       finish();
@@ -311,6 +327,7 @@ export function mountStepAudio(root, store) {
     levels.hidden = !ui.micRunning || ui.micStopping;
     levelRows.voce.hidden = !showMicPicker(source);
     levelRows.reuniao.hidden = source === 'mic';
+    syncSilenceNote();
 
     modelSel.disabled = langSel.disabled = busy;
     goBtn.hidden = ui.tab !== 'file';

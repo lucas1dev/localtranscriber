@@ -49,6 +49,8 @@ export function showSilenceHint({ mac, source, peak, elapsedMs, pinned }) {
 
 export const silenceHintText = ({ pinned }) => (pinned ? PINNED_SILENCE_HINT : SILENCE_HINT);
 
+export const showOutputNote = ({ running, message }) => !!running && !!message;
+
 export const showOutputPicker = (source) => source !== 'mic';
 
 // Saída salva, se ainda existir; senão a primeira opção (null).

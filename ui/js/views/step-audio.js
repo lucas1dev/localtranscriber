@@ -6,7 +6,7 @@ import {
 } from '../flow.js';
 import {
   SILENCE_HINT, SPEAKER_LABEL, createRecorder, isMacUserAgent, levelPercent, liveLine, outputOptions, pickMicId,
-  pickOutputId, pickSource, recordingFailure, recordingResult, showHeadphoneHint, showMicPicker, showOutputPicker,
+  pickOutputId, pickSource, recordingFailure, recordingResult, showHeadphoneHint, showMicPicker, showOutputNote, showOutputPicker,
   showSilenceHint, silenceHintText,
 } from '../recorder.js';
 
@@ -27,7 +27,7 @@ export function mountStepAudio(root, store) {
   const mac = isMacUserAgent(navigator.userAgent);
   const ui = {
     tab: 'file', path: null, model: '', language: null, confirming: false, micRunning: false, micStopping: false, starting: false, elapsed: 0,
-    source: null, inputs: [], micId: null, inputsLoaded: false, outputs: [], outputId: null,
+    source: null, inputs: [], micId: null, inputsLoaded: false, outputs: [], outputId: null, outputNotice: '',
     // Gravação em andamento: fonte usada, quando começou e o maior nível de Reunião.
     recSource: null, recOutputId: null, startedAt: 0, systemPeak: 0,
   };
@@ -231,7 +231,7 @@ export function mountStepAudio(root, store) {
     recorder = createRecorder({
       onText: appendLive,
       onLevel: setLevels,
-      onNotice: (message) => { outputNote.textContent = message; outputNote.hidden = false; },
+      onNotice: (message) => { ui.outputNotice = message; render(); },
       // O backend já encerrou a sessão: mostra o aviso e recolhe o resultado parcial.
       // Durante a abertura (`deferred`) a coleta espera start() terminar.
       onError: (message, deferred) => {
@@ -244,8 +244,7 @@ export function mountStepAudio(root, store) {
     ui.recSource = source;
     const outputId = showOutputPicker(source) ? ui.outputId : null;
     ui.recOutputId = outputId;
-    outputNote.textContent = '';
-    outputNote.hidden = true;
+    ui.outputNotice = '';
     ui.systemPeak = 0;
     ui.starting = true;
     render();
@@ -255,6 +254,7 @@ export function mountStepAudio(root, store) {
     } catch (e) {
       recorder = null;
       ui.starting = false;
+      ui.outputNotice = '';
       store.set(failJob(store.get(), errorMessage(e)));
       return;
     }
@@ -283,7 +283,7 @@ export function mountStepAudio(root, store) {
     if (job?.kind === 'mic') store.set({ job: { ...job, stopping: true } });
     render();
     const r = recorder;
-    const finish = () => { ui.micRunning = ui.micStopping = false; recorder = null; };
+    const finish = () => { ui.micRunning = ui.micStopping = false; recorder = null; ui.outputNotice = ''; };
     try {
       const result = toTranscript(await r.stop());
       finish();
@@ -357,6 +357,8 @@ export function mountStepAudio(root, store) {
     levels.hidden = !ui.micRunning || ui.micStopping;
     levelRows.voce.hidden = !showMicPicker(source);
     levelRows.reuniao.hidden = source === 'mic';
+    outputNote.textContent = ui.outputNotice;
+    outputNote.hidden = !showOutputNote({ running: ui.micRunning, message: ui.outputNotice });
     syncSilenceNote();
 
     modelSel.disabled = langSel.disabled = busy;

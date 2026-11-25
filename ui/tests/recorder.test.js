@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   SPEAKER_LABEL, liveLine, levelPercent, pickSource, showMicPicker, showHeadphoneHint, pickMicId, createRecorder,
-  showOutputPicker, pickOutputId, firstOutputLabel, outputOptions, PINNED_SILENCE_HINT, silenceHintText,
+  showOutputPicker, pickOutputId, firstOutputLabel, outputOptions, PINNED_SILENCE_HINT, silenceHintText, showOutputNote,
   isMacUserAgent, silenceHint, showSilenceHint, SILENCE_HINT, SILENCE_HINT_MS, afterRecording, recordingResult, recordingFailure,
 } from '../js/recorder.js';
 import { afterTranscribe, initialState } from '../js/flow.js';
@@ -229,4 +229,11 @@ test('createRecorder: record://notice só durante a gravação e outputId vai na
   await rec.stop();
   f.handlers['record://notice']({ message: 'depois' });
   assert.deepEqual(notes, ['caiu']);
+});
+
+test('showOutputNote: só gravando e com mensagem', () => {
+  assert.equal(showOutputNote({ running: true, message: 'caiu' }), true);
+  assert.equal(showOutputNote({ running: false, message: 'caiu' }), false);
+  assert.equal(showOutputNote({ running: true, message: '' }), false);
+  assert.equal(showOutputNote({ running: true, message: null }), false);
 });

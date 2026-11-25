@@ -99,7 +99,11 @@ fn open_source(
     mic_id: Option<&str>,
 ) -> Result<(OpenSource, Receiver<SourceMsg>), AppError> {
     let (tx, rx) = mpsc::sync_channel(SOURCE_QUEUE);
-    Ok((devices::open(kind, mic_id, tx)?, rx))
+    let device_id = match kind {
+        SourceKind::Mic => mic_id,
+        SourceKind::System => None,
+    };
+    Ok((devices::open(kind, device_id, tx)?, rx))
 }
 
 /// Abre as fontes e começa a sessão (bloqueante). Devolve a sessão e o `sourceName`.

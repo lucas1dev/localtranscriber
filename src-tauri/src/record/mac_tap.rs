@@ -112,7 +112,13 @@ unsafe impl Send for SystemTap {}
 impl SystemTap {
     /// Cria o tap e o agregado e começa a mandar áudio para `sink`. Se o
     /// agregado morrer ou o serviço de áudio reiniciar, marca `fault`.
-    pub fn open(sink: RawSink, fault: &'static AtomicU8) -> Result<SystemTap, AppError> {
+    ///
+    /// `device_uid` `Some`: grava só a saída com esse UID; `None`: o tap global.
+    pub fn open(
+        sink: RawSink,
+        fault: &'static AtomicU8,
+        device_uid: Option<&str>,
+    ) -> Result<SystemTap, AppError> {
         let mut tap = SystemTap {
             tap_id: 0,
             aggregate_id: 0,
@@ -125,12 +131,21 @@ impl SystemTap {
             ctx: std::ptr::null_mut(),
         };
 
-        // 1–2. Tap global mono de todos os processos, sem silenciar a saída.
+        // 1–2. Tap de todos os processos, sem silenciar a saída: global mono, ou
+        // preso à saída escolhida (a stream 0 do dispositivo é a gravada).
         let description = unsafe {
-            let d = CATapDescription::initMonoGlobalTapButExcludeProcesses(
-                CATapDescription::alloc(),
-                &NSArray::new(),
-            );
+            let d = match device_uid {
+                None => CATapDescription::initMonoGlobalTapButExcludeProcesses(
+                    CATapDescription::alloc(),
+                    &NSArray::new(),
+                ),
+                Some(uid) => CATapDescription::initExcludingProcesses_andDeviceUID_withStream(
+                    CATapDescription::alloc(),
+                    &NSArray::new(),
+                    &NSString::from_str(uid),
+                    0,
+                ),
+            };
             d.setMuteBehavior(CATapMuteBehavior::Unmuted);
             d.setPrivate(true);
             d

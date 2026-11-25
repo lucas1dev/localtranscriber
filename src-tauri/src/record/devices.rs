@@ -98,7 +98,19 @@ pub struct OpenSource {
     stopping: Arc<AtomicBool>,
     dropped: Arc<AtomicU64>,
     device_name: String,
-    output_id: Option<String>,
+    binding: OutputBinding,
+}
+
+/// A que saída a captura está presa.
+#[allow(dead_code)] // `FollowDefault` só é criado no Windows.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum OutputBinding {
+    /// Microfone, ou o tap global do Mac, que já segue qualquer saída.
+    None,
+    /// Loopback da saída padrão do Windows: reabrir quando a padrão mudar.
+    FollowDefault(String),
+    /// Saída escolhida pelo usuário: nunca muda sozinha.
+    Pinned(String),
 }
 
 impl OpenSource {
@@ -107,13 +119,9 @@ impl OpenSource {
         &self.device_name
     }
 
-    /// Contrato com a sessão para a troca de saída:
-    /// - `Some(id)`: som do computador preso a uma saída (loopback WASAPI). Reabrir
-    ///   quando `should_reopen(id, default_output_id())` for verdadeiro.
-    /// - `None`: nunca reabrir por troca de saída. É o microfone, ou o tap global
-    ///   do Mac, que já segue qualquer saída.
-    pub fn output_id(&self) -> Option<&str> {
-        self.output_id.as_deref()
+    /// Contrato com a sessão para a troca de saída (ver `OutputBinding`).
+    pub fn binding(&self) -> &OutputBinding {
+        &self.binding
     }
 
     /// Pacotes de áudio descartados porque uma fila estava cheia.
@@ -156,6 +164,55 @@ pub fn list_inputs() -> Result<Vec<AudioInput>, AppError> {
     Ok(list)
 }
 
+/// Saídas de som disponíveis; a padrão do sistema vem primeiro.
+#[allow(dead_code)] // usado pela sessão e pelos comandos (Task 2)
+pub fn list_outputs() -> Result<Vec<AudioInput>, AppError> {
+    let host = cpal::default_host();
+    let default_id = host.default_output_device().and_then(|d| d.id().ok());
+    let devices = host.output_devices().map_err(|e| {
+        AppError::Internal(format!("Não foi possível listar as saídas de som: {e}"))
+    })?;
+    let mut list: Vec<AudioInput> = devices
+        .filter_map(|device| {
+            let id = device.id().ok()?;
+            let id_text = id.to_string();
+            let name = device_name(&device).unwrap_or_else(|| id_text.clone());
+            Some(AudioInput {
+                is_default: default_id.as_ref() == Some(&id),
+                id: id_text,
+                name,
+            })
+        })
+        .collect();
+    list.sort_by_key(|i| !i.is_default);
+    Ok(list)
+}
+
+/// A saída pedida, só se existir; senão `None` (a primeira opção). Diferente de
+/// `resolve_mic`, não cai para a padrão.
+#[allow(dead_code)] // usado pela sessão e pelos comandos (Task 2)
+pub fn resolve_output<'a>(
+    outputs: &'a [AudioInput],
+    wanted: Option<&str>,
+) -> Option<&'a AudioInput> {
+    wanted.and_then(|w| outputs.iter().find(|i| i.id == w))
+}
+
+/// Ids das saídas presentes; `None` se a listagem falhar.
+#[allow(dead_code)] // usado pela sessão e pelos comandos (Task 2)
+pub fn output_ids() -> Option<Vec<String>> {
+    list_outputs()
+        .ok()
+        .map(|list| list.into_iter().map(|i| i.id).collect())
+}
+
+/// O UID do dispositivo (a parte do id depois de `host:`).
+pub fn device_uid(id: &str) -> Option<String> {
+    cpal::DeviceId::from_str(id)
+        .ok()
+        .map(|d| d.id().to_string())
+}
+
 /// O microfone pedido se existir; senão o padrão; senão o primeiro.
 pub fn resolve_mic<'a>(inputs: &'a [AudioInput], wanted: Option<&str>) -> Option<&'a AudioInput> {
     wanted
@@ -175,11 +232,12 @@ pub fn default_output_id() -> Option<String> {
     device.id().ok().map(|id| id.to_string())
 }
 
-/// Abre o microfone (`mic_id`, ou o padrão) ou o som do computador e manda áudio
-/// mono 16 kHz por `tx`.
+/// Abre o microfone ou o som do computador e manda áudio mono 16 kHz por `tx`.
+/// `device_id` é o microfone para `Mic` (`None` = padrão) e a saída escolhida para
+/// `System` (`None` = primeira opção).
 pub fn open(
     kind: SourceKind,
-    mic_id: Option<&str>,
+    device_id: Option<&str>,
     tx: SyncSender<SourceMsg>,
 ) -> Result<OpenSource, AppError> {
     let (raw_tx, raw_rx) = mpsc::sync_channel::<Raw>(RAW_QUEUE);
@@ -191,37 +249,66 @@ pub fn open(
         dropped: dropped.clone(),
     };
 
-    let (backend, device_name, output_id) = match kind {
+    let (backend, device_name, binding) = match kind {
         SourceKind::Mic => {
-            let device = find_mic(mic_id)?;
+            let device = find_mic(device_id)?;
             let config = device
                 .default_input_config()
                 .map_err(|e| open_error(kind, &e))?;
             let name = device_name(&device).unwrap_or_else(|| "Microfone".into());
             let stream = build_stream(kind, &device, &config, sink, fault.clone())?;
-            (Backend::Cpal(stream), name, None)
+            (Backend::Cpal(stream), name, OutputBinding::None)
         }
         #[cfg(target_os = "macos")]
         SourceKind::System => {
             // Os listeners do tap guardam um ponteiro para a célula de falha e
             // podem rodar logo depois de removidos: a célula nunca é liberada.
             let fault_cell: &'static Arc<AtomicU8> = Box::leak(Box::new(fault.clone()));
-            let tap = super::mac_tap::SystemTap::open(sink, fault_cell)?;
-            (Backend::MacTap(tap), "Som do computador".to_string(), None)
+            match device_id {
+                None => {
+                    let tap = super::mac_tap::SystemTap::open(sink, fault_cell, None)?;
+                    (
+                        Backend::MacTap(tap),
+                        "Som do computador".to_string(),
+                        OutputBinding::None,
+                    )
+                }
+                Some(id) => {
+                    let uid = device_uid(id).ok_or_else(output_not_found)?;
+                    let name = find_output(id)
+                        .ok()
+                        .and_then(|d| device_name(&d))
+                        .unwrap_or_else(|| uid.clone());
+                    let tap = super::mac_tap::SystemTap::open(sink, fault_cell, Some(&uid))?;
+                    (
+                        Backend::MacTap(tap),
+                        name,
+                        OutputBinding::Pinned(id.to_string()),
+                    )
+                }
+            }
         }
         #[cfg(not(target_os = "macos"))]
         SourceKind::System => {
-            // Loopback: stream de entrada sobre a saída padrão, no formato da saída.
-            let device = cpal::default_host()
-                .default_output_device()
-                .ok_or_else(|| AppError::User("Nenhuma saída de som encontrada.".into()))?;
+            // Loopback: stream de entrada sobre a saída escolhida (ou a padrão),
+            // no formato da saída.
+            let device = match device_id {
+                Some(id) => find_output(id)?,
+                None => cpal::default_host()
+                    .default_output_device()
+                    .ok_or_else(|| AppError::User("Nenhuma saída de som encontrada.".into()))?,
+            };
             let config = device
                 .default_output_config()
                 .map_err(|e| open_error(kind, &e))?;
             let id = device.id().map_err(|e| open_error(kind, &e))?.to_string();
             let name = device_name(&device).unwrap_or_else(|| id.clone());
             let stream = build_stream(kind, &device, &config, sink, fault.clone())?;
-            (Backend::Cpal(stream), name, Some(id))
+            let binding = match device_id {
+                Some(_) => OutputBinding::Pinned(id),
+                None => OutputBinding::FollowDefault(id),
+            };
+            (Backend::Cpal(stream), name, binding)
         }
     };
 
@@ -248,7 +335,7 @@ pub fn open(
         stopping,
         dropped,
         device_name,
-        output_id,
+        binding,
     };
     // O tap do Mac já começa em `SystemTap::open`; o stream da cpal começa aqui.
     if let Some(Backend::Cpal(stream)) = &source.backend {
@@ -263,6 +350,17 @@ fn device_name(device: &cpal::Device) -> Option<String> {
         .map(|d| d.name().trim().to_string())
         .ok()
         .filter(|n| !n.is_empty())
+}
+
+fn output_not_found() -> AppError {
+    AppError::User("Saída de som não encontrada.".into())
+}
+
+fn find_output(id: &str) -> Result<cpal::Device, AppError> {
+    cpal::DeviceId::from_str(id)
+        .ok()
+        .and_then(|id| cpal::default_host().device_by_id(&id))
+        .ok_or_else(output_not_found)
 }
 
 fn find_mic(mic_id: Option<&str>) -> Result<cpal::Device, AppError> {
@@ -625,6 +723,39 @@ mod tests {
     }
 
     #[test]
+    fn resolve_output_finds_wanted() {
+        let list = [input("a", true), input("b", false)];
+        assert_eq!(
+            resolve_output(&list, Some("b")).map(|i| i.id.as_str()),
+            Some("b")
+        );
+    }
+
+    #[test]
+    fn resolve_output_missing_is_none() {
+        let list = [input("a", true), input("b", false)];
+        assert!(resolve_output(&list, Some("z")).is_none());
+        assert!(resolve_output(&list, None).is_none());
+    }
+
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn device_uid_strips_host() {
+        assert_eq!(
+            device_uid("coreaudio:BuiltInSpeakerDevice").as_deref(),
+            Some("BuiltInSpeakerDevice")
+        );
+        assert_eq!(device_uid("semhost"), None);
+    }
+
+    #[test]
+    #[cfg(target_os = "windows")]
+    fn device_uid_strips_host() {
+        assert_eq!(device_uid("wasapi:{abc}").as_deref(), Some("{abc}"));
+        assert_eq!(device_uid("semhost"), None);
+    }
+
+    #[test]
     fn should_reopen_same_id_is_false() {
         assert!(!should_reopen("coreaudio:x", Some("coreaudio:x")));
     }
@@ -924,6 +1055,61 @@ mod tests {
         assert_send::<OpenSource>();
     }
 
+    /// Abre o som do computador preso à saída padrão e confirma que chegam pacotes
+    /// enquanto algo toca. Precisa de dispositivos reais (Mac: `afplay`).
+    #[test]
+    #[ignore]
+    #[cfg(target_os = "macos")]
+    fn real_pinned_output_smoke() {
+        use std::sync::atomic::AtomicBool;
+        use std::time::Instant;
+
+        let outputs = list_outputs().expect("listar saídas");
+        for o in &outputs {
+            println!("saída: {:?} id={} padrão={}", o.name, o.id, o.is_default);
+        }
+        let default = outputs
+            .iter()
+            .find(|o| o.is_default)
+            .expect("sem saída padrão");
+
+        let (tx, rx) = mpsc::sync_channel(64);
+        let src = open(SourceKind::System, Some(&default.id), tx).expect("abrir preso");
+        println!("aberto {:?} binding={:?}", src.device_name(), src.binding());
+        assert_eq!(src.binding(), &OutputBinding::Pinned(default.id.clone()));
+        assert_eq!(src.device_name(), default.name);
+
+        let stop = Arc::new(AtomicBool::new(false));
+        let player = {
+            let stop = stop.clone();
+            std::thread::spawn(move || {
+                while !stop.load(Ordering::Relaxed) {
+                    let _ = std::process::Command::new("afplay")
+                        .arg("/System/Library/Sounds/Glass.aiff")
+                        .status();
+                }
+            })
+        };
+        let (mut packets, mut peak) = (0usize, 0f32);
+        let start = Instant::now();
+        while start.elapsed() < Duration::from_secs(3) {
+            while let Ok(msg) = rx.try_recv() {
+                match msg {
+                    SourceMsg::Pcm(p) => {
+                        packets += 1;
+                        peak = p.iter().fold(peak, |m, s| m.max(s.abs()));
+                    }
+                    SourceMsg::Failed(m) => panic!("falhou: {m}"),
+                }
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        stop.store(true, Ordering::Relaxed);
+        player.join().unwrap();
+        println!("pacotes {packets}, pico {peak:.4}");
+        assert!(packets > 0, "nenhum pacote recebido");
+    }
+
     #[test]
     fn list_inputs_does_not_panic() {
         // Os runners do CI não têm áudio: Ok vazio ou Err são válidos.
@@ -958,9 +1144,9 @@ mod tests {
             match open(kind, None, tx) {
                 Ok(src) => {
                     println!(
-                        "{kind:?}: aberto {:?} output_id={:?} em {} ms",
+                        "{kind:?}: aberto {:?} binding={:?} em {} ms",
                         src.device_name(),
-                        src.output_id(),
+                        src.binding(),
                         t.elapsed().as_millis()
                     );
                     opened.push((kind, src, rx));
@@ -1002,9 +1188,10 @@ mod tests {
         let output_now = default_output_id();
         for ((kind, src, rx), mut st) in opened.into_iter().zip(stats) {
             let dropped = src.dropped();
-            let reopen = src
-                .output_id()
-                .map(|id| should_reopen(id, output_now.as_deref()));
+            let reopen = match src.binding() {
+                OutputBinding::FollowDefault(id) => Some(should_reopen(id, output_now.as_deref())),
+                _ => None,
+            };
             drop(src);
             while let Ok(msg) = rx.try_recv() {
                 take(&mut st, msg);

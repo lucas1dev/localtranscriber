@@ -15,7 +15,7 @@ use std::sync::Arc;
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
-use super::devices::{self, OpenSource, SourceKind, SourceMsg, MIC_GONE};
+use super::devices::{self, OpenSource, OutputBinding, SourceKind, SourceMsg, MIC_GONE};
 use super::merge::{interleave, labeled_text, shift_segments};
 use super::track::{level, Track};
 use crate::error::AppError;
@@ -49,7 +49,7 @@ const LEVEL_HOLD_TICKS: u32 = 5;
 
 /// Uma captura aberta. Soltar o valor para a captura.
 pub trait Capture: Send {
-    /// `Some` só quando a captura está presa a uma saída (ver `OpenSource::output_id`).
+    /// `Some` só quando a captura está presa a uma saída (ver `OpenSource::binding`).
     fn output_id(&self) -> Option<&str>;
     /// Pacotes de áudio descartados porque uma fila estava cheia.
     fn dropped(&self) -> u64;
@@ -57,7 +57,10 @@ pub trait Capture: Send {
 
 impl Capture for OpenSource {
     fn output_id(&self) -> Option<&str> {
-        OpenSource::output_id(self)
+        match OpenSource::binding(self) {
+            OutputBinding::FollowDefault(id) => Some(id),
+            _ => None,
+        }
     }
     fn dropped(&self) -> u64 {
         OpenSource::dropped(self)

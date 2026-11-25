@@ -17,6 +17,8 @@ pub struct Settings {
     pub record_source: String,
     #[serde(deserialize_with = "lenient_record_mic_id")]
     pub record_mic_id: Option<String>,
+    #[serde(deserialize_with = "lenient_record_mic_id")]
+    pub record_output_id: Option<String>,
 }
 
 /// Um valor desconhecido (ou de tipo errado) vira `None` em vez de invalidar o arquivo todo.
@@ -34,7 +36,7 @@ fn lenient_record_source<'de, D: Deserializer<'de>>(d: D) -> Result<String, D::E
     })
 }
 
-/// Id de microfone de tipo errado vira `None`.
+/// Id de microfone ou de saída de som de tipo errado vira `None`.
 fn lenient_record_mic_id<'de, D: Deserializer<'de>>(d: D) -> Result<Option<String>, D::Error> {
     let v = serde_json::Value::deserialize(d)?;
     Ok(serde_json::from_value(v).ok())
@@ -50,6 +52,7 @@ impl Default for Settings {
             claude_code_enabled: false,
             record_source: "mic".into(),
             record_mic_id: None,
+            record_output_id: None,
         }
     }
 }
@@ -136,6 +139,7 @@ mod tests {
         let s: Settings = serde_json::from_str("{}").unwrap();
         assert_eq!(s.record_source, "mic");
         assert_eq!(s.record_mic_id, None);
+        assert_eq!(s.record_output_id, None);
     }
 
     #[test]
@@ -153,5 +157,18 @@ mod tests {
         assert_eq!(s.record_mic_id, None);
         assert_eq!(s.default_language, "pt");
         assert_eq!(s.record_source, "system");
+    }
+
+    #[test]
+    fn record_output_id_wrong_type_is_none() {
+        let s: Settings = serde_json::from_str(
+            r#"{"record_output_id":5,"record_mic_id":"m1","default_language":"pt"}"#,
+        )
+        .unwrap();
+        assert_eq!(s.record_output_id, None);
+        assert_eq!(s.record_mic_id.as_deref(), Some("m1"));
+        assert_eq!(s.default_language, "pt");
+        let s: Settings = serde_json::from_str(r#"{"record_output_id":"coreaudio:X"}"#).unwrap();
+        assert_eq!(s.record_output_id.as_deref(), Some("coreaudio:X"));
     }
 }

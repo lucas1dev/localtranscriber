@@ -102,7 +102,7 @@ pub struct OpenSource {
 }
 
 /// A que saída a captura está presa.
-#[allow(dead_code)] // `FollowDefault` só é criado no Windows.
+#[cfg_attr(target_os = "macos", allow(dead_code))] // `FollowDefault` só é criado no Windows.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum OutputBinding {
     /// Microfone, ou o tap global do Mac, que já segue qualquer saída.
@@ -165,7 +165,6 @@ pub fn list_inputs() -> Result<Vec<AudioInput>, AppError> {
 }
 
 /// Saídas de som disponíveis; a padrão do sistema vem primeiro.
-#[allow(dead_code)] // usado pela sessão e pelos comandos (Task 2)
 pub fn list_outputs() -> Result<Vec<AudioInput>, AppError> {
     let host = cpal::default_host();
     let default_id = host.default_output_device().and_then(|d| d.id().ok());
@@ -190,7 +189,6 @@ pub fn list_outputs() -> Result<Vec<AudioInput>, AppError> {
 
 /// A saída pedida, só se existir; senão `None` (a primeira opção). Diferente de
 /// `resolve_mic`, não cai para a padrão.
-#[allow(dead_code)] // usado pela sessão e pelos comandos (Task 2)
 pub fn resolve_output<'a>(
     outputs: &'a [AudioInput],
     wanted: Option<&str>,
@@ -199,7 +197,6 @@ pub fn resolve_output<'a>(
 }
 
 /// Ids das saídas presentes; `None` se a listagem falhar.
-#[allow(dead_code)] // usado pela sessão e pelos comandos (Task 2)
 pub fn output_ids() -> Option<Vec<String>> {
     list_outputs()
         .ok()
@@ -207,6 +204,7 @@ pub fn output_ids() -> Option<Vec<String>> {
 }
 
 /// O UID do dispositivo (a parte do id depois de `host:`).
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 pub fn device_uid(id: &str) -> Option<String> {
     cpal::DeviceId::from_str(id)
         .ok()
@@ -221,9 +219,29 @@ pub fn resolve_mic<'a>(inputs: &'a [AudioInput], wanted: Option<&str>) -> Option
         .or_else(|| inputs.first())
 }
 
-/// Verdadeiro quando há uma saída padrão nova, diferente da usada.
-pub fn should_reopen(current_output: &str, default_output_now: Option<&str>) -> bool {
-    matches!(default_output_now, Some(now) if now != current_output)
+/// Aviso quando a saída escolhida some e a gravação cai para a primeira opção.
+#[cfg(target_os = "macos")]
+pub const OUTPUT_FALLBACK: &str =
+    "A saída de som escolhida foi desconectada. Gravando agora de todas as saídas.";
+#[cfg(not(target_os = "macos"))]
+pub const OUTPUT_FALLBACK: &str =
+    "A saída de som escolhida foi desconectada. Gravando agora da saída padrão.";
+
+/// Verdadeiro quando a captura precisa ser reaberta: `FollowDefault` quando há uma
+/// saída padrão nova; `Pinned` quando a saída escolhida saiu da listagem. Listagem
+/// que falhou (`None`) ou vazia nunca derruba uma captura escolhida.
+pub fn should_reopen(
+    binding: &OutputBinding,
+    default_now: Option<&str>,
+    outputs_now: Option<&[String]>,
+) -> bool {
+    match binding {
+        OutputBinding::None => false,
+        OutputBinding::FollowDefault(id) => matches!(default_now, Some(now) if now != id),
+        OutputBinding::Pinned(id) => {
+            matches!(outputs_now, Some(l) if !l.is_empty() && !l.contains(id))
+        }
+    }
 }
 
 /// Id da saída padrão atual, para `should_reopen`.
@@ -757,17 +775,49 @@ mod tests {
 
     #[test]
     fn should_reopen_same_id_is_false() {
-        assert!(!should_reopen("coreaudio:x", Some("coreaudio:x")));
+        let b = OutputBinding::FollowDefault("coreaudio:x".into());
+        assert!(!should_reopen(&b, Some("coreaudio:x"), None));
     }
 
     #[test]
     fn should_reopen_new_id_is_true() {
-        assert!(should_reopen("coreaudio:x", Some("coreaudio:y")));
+        let b = OutputBinding::FollowDefault("coreaudio:x".into());
+        assert!(should_reopen(&b, Some("coreaudio:y"), None));
     }
 
     #[test]
     fn should_reopen_without_default_is_false() {
-        assert!(!should_reopen("coreaudio:x", None));
+        let b = OutputBinding::FollowDefault("coreaudio:x".into());
+        assert!(!should_reopen(&b, None, None));
+    }
+
+    #[test]
+    fn should_reopen_pinned_follows_the_listing() {
+        let b = OutputBinding::Pinned("a".into());
+        let ids = |l: &[&str]| l.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        assert!(!should_reopen(&b, None, Some(&ids(&["a", "b"]))));
+        assert!(should_reopen(&b, None, Some(&ids(&["b"]))));
+        // Listagem que falhou, ou que voltou vazia por um instante: mantém a captura.
+        assert!(!should_reopen(&b, None, None));
+        assert!(!should_reopen(&b, None, Some(&[])));
+        // A saída padrão não interessa a uma saída escolhida.
+        assert!(!should_reopen(&b, Some("outra"), Some(&ids(&["a"]))));
+    }
+
+    #[test]
+    fn should_reopen_unbound_is_never() {
+        let list = ["a".to_string()];
+        assert!(!should_reopen(&OutputBinding::None, Some("y"), Some(&list)));
+        assert!(!should_reopen(&OutputBinding::None, None, None));
+    }
+
+    #[test]
+    fn output_fallback_names_the_first_option() {
+        #[cfg(target_os = "macos")]
+        assert!(OUTPUT_FALLBACK.ends_with("Gravando agora de todas as saídas."));
+        #[cfg(not(target_os = "macos"))]
+        assert!(OUTPUT_FALLBACK.ends_with("Gravando agora da saída padrão."));
+        assert!(OUTPUT_FALLBACK.starts_with("A saída de som escolhida foi desconectada."));
     }
 
     #[test]
@@ -1189,7 +1239,9 @@ mod tests {
         for ((kind, src, rx), mut st) in opened.into_iter().zip(stats) {
             let dropped = src.dropped();
             let reopen = match src.binding() {
-                OutputBinding::FollowDefault(id) => Some(should_reopen(id, output_now.as_deref())),
+                b @ OutputBinding::FollowDefault(_) => {
+                    Some(should_reopen(b, output_now.as_deref(), None))
+                }
                 _ => None,
             };
             drop(src);

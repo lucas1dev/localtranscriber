@@ -35,6 +35,7 @@ pub fn run() {
             commands::transcription::transcribe_file,
             commands::transcription::cancel_transcription,
             commands::recording::list_audio_inputs,
+            commands::recording::list_audio_outputs,
             commands::recording::start_recording,
             commands::recording::stop_recording,
             commands::recording::confirm_close,

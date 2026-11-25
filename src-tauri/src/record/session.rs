@@ -49,18 +49,15 @@ const LEVEL_HOLD_TICKS: u32 = 5;
 
 /// Uma captura aberta. Soltar o valor para a captura.
 pub trait Capture: Send {
-    /// `Some` só quando a captura está presa a uma saída (ver `OpenSource::binding`).
-    fn output_id(&self) -> Option<&str>;
+    /// A que saída a captura está presa (ver `OutputBinding`).
+    fn binding(&self) -> &OutputBinding;
     /// Pacotes de áudio descartados porque uma fila estava cheia.
     fn dropped(&self) -> u64;
 }
 
 impl Capture for OpenSource {
-    fn output_id(&self) -> Option<&str> {
-        match OpenSource::binding(self) {
-            OutputBinding::FollowDefault(id) => Some(id),
-            _ => None,
-        }
+    fn binding(&self) -> &OutputBinding {
+        OpenSource::binding(self)
     }
     fn dropped(&self) -> u64 {
         OpenSource::dropped(self)
@@ -71,9 +68,13 @@ impl Capture for OpenSource {
 pub struct Opened {
     pub capture: Box<dyn Capture>,
     pub rx: Receiver<SourceMsg>,
+    /// Aviso para a interface, mandado quando esta captura entra na sessão (a saída
+    /// escolhida sumiu e a gravação caiu para a primeira opção).
+    pub notice: Option<String>,
 }
 
-/// Abre de novo a mesma fonte (o mesmo `mic_id`, ou a saída padrão atual).
+/// Abre de novo a mesma fonte (o mesmo `mic_id`; a saída escolhida, ou a primeira
+/// opção se ela sumiu).
 pub type Reopen = Box<dyn FnMut() -> Result<Opened, AppError> + Send>;
 pub type TranscribeFn = dyn Fn(&[f32]) -> Result<Vec<Segment>, AppError> + Send + Sync;
 pub type Transcriber = Arc<TranscribeFn>;
@@ -87,10 +88,12 @@ pub struct SourceSpec {
     pub reopen: Reopen,
 }
 
-/// O que a sessão consulta do mundo: o relógio e a saída de som padrão.
+/// O que a sessão consulta do mundo: o relógio, a saída de som padrão e a lista
+/// das saídas presentes (`None` se a listagem falhar).
 pub struct Env {
     pub now: Arc<dyn Fn() -> Instant + Send + Sync>,
     pub default_output: Arc<dyn Fn() -> Option<String> + Send + Sync>,
+    pub outputs: Arc<dyn Fn() -> Option<Vec<String>> + Send + Sync>,
 }
 
 impl Env {
@@ -98,6 +101,7 @@ impl Env {
         Self {
             now: Arc::new(Instant::now),
             default_output: Arc::new(devices::default_output_id),
+            outputs: Arc::new(devices::output_ids),
         }
     }
 }
@@ -106,6 +110,8 @@ impl Env {
 pub enum SessionEvent {
     Text { speaker: Option<&'static str>, text: String },
     Level { mic: Option<f32>, system: Option<f32> },
+    /// Aviso que não encerra a gravação.
+    Notice { message: String },
     Error { message: String },
 }
 
@@ -336,7 +342,12 @@ impl Live {
         self.rx = None;
     }
 
-    fn install(&mut self, opened: Opened, now: Instant) {
+    /// `shared` vai como argumento (e não dentro do `Live`) porque só `install` e
+    /// `maintain` emitem eventos; o aviso sai quando a captura nova entra.
+    fn install(&mut self, opened: Opened, now: Instant, shared: &Shared) {
+        if let Some(message) = opened.notice {
+            (shared.sink)(SessionEvent::Notice { message });
+        }
         self.capture = Some(opened.capture);
         self.rx = Some(opened.rx);
         self.opened_at = now;
@@ -367,10 +378,17 @@ impl Live {
         }
     }
 
-    /// Reabre a fonte caída, ou a de sistema cuja saída padrão mudou.
+    /// Reabre a fonte caída, ou a de sistema cuja saída padrão mudou (ou cuja saída
+    /// escolhida sumiu).
     /// Roda depois de `drain`/`on_failed` no mesmo ciclo: uma captura ainda aberta
     /// aqui não falhou até `now`.
-    fn maintain(&mut self, tick: u64, env: &Env, now: Instant) -> Result<(), String> {
+    fn maintain(
+        &mut self,
+        tick: u64,
+        env: &Env,
+        now: Instant,
+        shared: &Shared,
+    ) -> Result<(), String> {
         if self.capture.is_some()
             && self.tries > 0
             && now.saturating_duration_since(self.opened_at) >= HEALTHY_FOR
@@ -386,24 +404,33 @@ impl Live {
                 self.tries += 1;
                 match (self.reopen)() {
                     Ok(opened) => {
-                        self.install(opened, now);
+                        self.install(opened, now, shared);
                         Ok(())
                     }
                     Err(e) => self.reopen_failed(e),
                 }
             }
             Some(capture) if tick.is_multiple_of(OUTPUT_POLL_TICKS) => {
-                let Some(current) = capture.output_id() else {
-                    return Ok(());
+                // Só a consulta que o vínculo usa: a saída padrão para `FollowDefault`,
+                // a listagem para `Pinned`.
+                let binding = capture.binding();
+                let default_now = match binding {
+                    OutputBinding::FollowDefault(_) => (env.default_output)(),
+                    _ => None,
                 };
-                if !devices::should_reopen(current, (env.default_output)().as_deref()) {
+                let outputs_now = match binding {
+                    OutputBinding::Pinned(_) => (env.outputs)(),
+                    _ => None,
+                };
+                if !devices::should_reopen(binding, default_now.as_deref(), outputs_now.as_deref())
+                {
                     return Ok(());
                 }
                 match (self.reopen)() {
                     Ok(opened) => {
                         // O relógio continua; o intervalo da troca vira silêncio.
                         self.close(now);
-                        self.install(opened, now);
+                        self.install(opened, now, shared);
                         Ok(())
                     }
                     Err(e) => {
@@ -445,7 +472,7 @@ impl Collector {
             }
             if !stopping && fatal.is_none() {
                 for s in &mut self.sources {
-                    if let Err(m) = s.maintain(tick, &self.env, now) {
+                    if let Err(m) = s.maintain(tick, &self.env, now, &self.shared) {
                         fatal.get_or_insert(m);
                     }
                 }
@@ -537,10 +564,18 @@ mod tests {
             self.ms.fetch_add((secs * 1000.0).round() as u64, Ordering::SeqCst);
         }
         fn env(&self, output: Arc<Mutex<Option<String>>>) -> Env {
+            self.env_with(output, Arc::new(Mutex::new(None)))
+        }
+        fn env_with(
+            &self,
+            output: Arc<Mutex<Option<String>>>,
+            outputs: Arc<Mutex<Option<Vec<String>>>>,
+        ) -> Env {
             let clock = self.clone();
             Env {
                 now: Arc::new(move || clock.now()),
                 default_output: Arc::new(move || output.lock().unwrap().clone()),
+                outputs: Arc::new(move || outputs.lock().unwrap().clone()),
             }
         }
         fn plain_env(&self) -> Env {
@@ -549,13 +584,13 @@ mod tests {
     }
 
     struct FakeCapture {
-        output: Option<String>,
+        binding: OutputBinding,
         dropped: Arc<AtomicBool>,
     }
 
     impl Capture for FakeCapture {
-        fn output_id(&self) -> Option<&str> {
-            self.output.as_deref()
+        fn binding(&self) -> &OutputBinding {
+            &self.binding
         }
         fn dropped(&self) -> u64 {
             0
@@ -569,11 +604,16 @@ mod tests {
     }
 
     /// Fonte fake: o remetente fica com o teste; a flag diz se a captura foi solta.
+    /// `output` `Some` = captura que segue a saída padrão (`FollowDefault`).
     fn fake_source(output: Option<&str>) -> (SyncSender<SourceMsg>, Opened, Arc<AtomicBool>) {
+        fake_bound(output.map_or(OutputBinding::None, |o| OutputBinding::FollowDefault(o.into())))
+    }
+
+    fn fake_bound(binding: OutputBinding) -> (SyncSender<SourceMsg>, Opened, Arc<AtomicBool>) {
         let (tx, rx) = mpsc::sync_channel(4096);
         let dropped = Arc::new(AtomicBool::new(false));
-        let capture = FakeCapture { output: output.map(str::to_string), dropped: dropped.clone() };
-        (tx, Opened { capture: Box::new(capture), rx }, dropped)
+        let capture = FakeCapture { binding, dropped: dropped.clone() };
+        (tx, Opened { capture: Box::new(capture), rx, notice: None }, dropped)
     }
 
     fn no_reopen() -> Reopen {
@@ -809,11 +849,12 @@ mod tests {
                 calls.fetch_add(1, Ordering::SeqCst);
                 let (tx, rx) = mpsc::sync_channel(4096);
                 let capture = FakeCapture {
-                    output: output.map(str::to_string),
+                    binding: output
+                        .map_or(OutputBinding::None, |o| OutputBinding::FollowDefault(o.into())),
                     dropped: new_dropped.clone(),
                 };
                 let _ = opened_tx.send(tx);
-                Ok(Opened { capture: Box::new(capture), rx })
+                Ok(Opened { capture: Box::new(capture), rx, notice: None })
             })
         };
         (reopen, opened_rx, calls, new_dropped)
@@ -916,6 +957,184 @@ mod tests {
         assert_eq!(session.stop().unwrap().text, "b0");
     }
 
+    /// Reabertura que cai para a primeira opção: a captura nova não tem vínculo e
+    /// traz o aviso. Conta as chamadas.
+    fn fallback_reopen(
+        notice: Option<&'static str>,
+    ) -> (Reopen, Receiver<SyncSender<SourceMsg>>, Arc<AtomicUsize>) {
+        let (opened_tx, opened_rx) = mpsc::channel();
+        let calls = Arc::new(AtomicUsize::new(0));
+        let reopen: Reopen = {
+            let calls = calls.clone();
+            Box::new(move || {
+                calls.fetch_add(1, Ordering::SeqCst);
+                let (tx, rx) = mpsc::sync_channel(4096);
+                let capture = FakeCapture {
+                    binding: OutputBinding::None,
+                    dropped: Arc::new(AtomicBool::new(false)),
+                };
+                let _ = opened_tx.send(tx);
+                Ok(Opened { capture: Box::new(capture), rx, notice: notice.map(String::from) })
+            })
+        };
+        (reopen, opened_rx, calls)
+    }
+
+    fn notices(events: &Receiver<SessionEvent>) -> Vec<SessionEvent> {
+        events.try_iter().filter(|e| matches!(e, SessionEvent::Notice { .. })).collect()
+    }
+
+    #[test]
+    fn pinned_output_gone_reopens_with_notice() {
+        let clock = FakeClock::new();
+        let outputs = Arc::new(Mutex::new(Some(vec!["a".to_string(), "b".to_string()])));
+        let (old_tx, opened, old_dropped) = fake_bound(OutputBinding::Pinned("a".into()));
+        let (reopen, new_sources, calls) = fallback_reopen(Some(devices::OUTPUT_FALLBACK));
+        let (sink, events) = sink();
+        let session = Session::new(
+            vec![spec(SourceKind::System, None, opened, reopen)],
+            fake_transcriber(),
+            sink,
+            clock.env_with(Arc::new(Mutex::new(None)), outputs.clone()),
+            clock.now(),
+        )
+        .unwrap();
+        feed(&old_tx, &clock, 6);
+        assert_eq!(calls.load(Ordering::SeqCst), 0, "a saída ainda está presente");
+        *outputs.lock().unwrap() = Some(vec!["b".to_string()]);
+        let new_tx = new_sources.recv_timeout(WAIT).expect("caiu para a primeira opção");
+        feed(&new_tx, &clock, 7);
+        let out = session.stop().unwrap();
+        // A captura nova não tem vínculo: nenhuma outra reabertura.
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        assert!(old_dropped.load(Ordering::SeqCst));
+        assert_eq!(out.text, "b0 b1");
+        let seen: Vec<_> = events.try_iter().collect();
+        assert_eq!(
+            seen.iter().filter(|e| matches!(e, SessionEvent::Notice { .. })).collect::<Vec<_>>(),
+            [&SessionEvent::Notice { message: devices::OUTPUT_FALLBACK.into() }]
+        );
+        assert!(!seen.iter().any(|e| matches!(e, SessionEvent::Error { .. })));
+    }
+
+    #[test]
+    fn pinned_output_swap_does_not_count_as_a_retry() {
+        // Troca bem-sucedida não conta tentativa: depois dela a captura nova ainda
+        // pode falhar três vezes antes de a sessão desistir.
+        let clock = FakeClock::new();
+        let outputs = Arc::new(Mutex::new(Some(vec!["a".to_string()])));
+        let (old_tx, opened, _) = fake_bound(OutputBinding::Pinned("a".into()));
+        let (reopen, called, calls) = flaky_reopen(0, usize::MAX, "A captura do som do computador falhou.");
+        let (sink, events) = sink();
+        let session = Session::new(
+            vec![spec(SourceKind::System, None, opened, reopen)],
+            fake_transcriber(),
+            sink,
+            clock.env_with(Arc::new(Mutex::new(None)), outputs.clone()),
+            clock.now(),
+        )
+        .unwrap();
+        feed(&old_tx, &clock, 2);
+        *outputs.lock().unwrap() = Some(vec!["b".to_string()]);
+        assert_eq!(called.recv_timeout(WAIT).unwrap(), 1);
+        // 1 troca + 3 tentativas depois da falha da captura nova = 4 chamadas.
+        wait_for(&events, |e| matches!(e, SessionEvent::Error { .. }));
+        session.stop().unwrap();
+        assert_eq!(calls.load(Ordering::SeqCst), 4);
+    }
+
+    #[test]
+    fn pinned_listing_error_keeps_capture() {
+        let clock = FakeClock::new();
+        let outputs = Arc::new(Mutex::new(None));
+        let (tx, opened, dropped) = fake_bound(OutputBinding::Pinned("a".into()));
+        let (reopen, _new, calls) = fallback_reopen(Some(devices::OUTPUT_FALLBACK));
+        let (sink, events) = sink();
+        let session = Session::new(
+            vec![spec(SourceKind::System, None, opened, reopen)],
+            fake_transcriber(),
+            sink,
+            clock.env_with(Arc::new(Mutex::new(None)), outputs),
+            clock.now(),
+        )
+        .unwrap();
+        // Vários ciclos de checagem (a cada 1 s) com a listagem falhando.
+        for _ in 0..4 {
+            wait_for(&events, |e| matches!(e, SessionEvent::Level { .. }));
+        }
+        feed(&tx, &clock, 12);
+        for _ in 0..25 {
+            wait_for(&events, |e| matches!(e, SessionEvent::Level { .. }));
+        }
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+        assert!(!dropped.load(Ordering::SeqCst));
+        assert_eq!(session.stop().unwrap().text, "b0");
+        assert!(notices(&events).is_empty());
+    }
+
+    #[test]
+    fn notice_on_failed_reopen_path() {
+        let clock = FakeClock::new();
+        let (old_tx, opened, _) = fake_bound(OutputBinding::Pinned("a".into()));
+        let (reopen, new_sources, calls) = fallback_reopen(Some(devices::OUTPUT_FALLBACK));
+        let (sink, events) = sink();
+        let session = Session::new(
+            vec![spec(SourceKind::System, None, opened, reopen)],
+            fake_transcriber(),
+            sink,
+            clock.plain_env(),
+            clock.now(),
+        )
+        .unwrap();
+        feed(&old_tx, &clock, 6);
+        old_tx.send(SourceMsg::Failed("A captura do som do computador falhou.".into())).unwrap();
+        let new_tx = new_sources.recv_timeout(WAIT).expect("reabriu");
+        feed(&new_tx, &clock, 7);
+        let out = session.stop().unwrap();
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        assert_eq!(out.text, "b0 b1");
+        let seen: Vec<_> = events.try_iter().collect();
+        assert_eq!(
+            seen.iter().filter(|e| matches!(e, SessionEvent::Notice { .. })).count(),
+            1
+        );
+        assert!(!seen.iter().any(|e| matches!(e, SessionEvent::Error { .. })));
+    }
+
+    #[test]
+    fn follow_default_ignores_the_output_listing() {
+        // `FollowDefault` só consulta a saída padrão; `Pinned` só a listagem.
+        let clock = FakeClock::new();
+        let default_calls = Arc::new(AtomicUsize::new(0));
+        let list_calls = Arc::new(AtomicUsize::new(0));
+        let env = {
+            let clock = clock.clone();
+            let (d, l) = (default_calls.clone(), list_calls.clone());
+            Env {
+                now: Arc::new(move || clock.now()),
+                default_output: Arc::new(move || {
+                    d.fetch_add(1, Ordering::SeqCst);
+                    Some("A".into())
+                }),
+                outputs: Arc::new(move || {
+                    l.fetch_add(1, Ordering::SeqCst);
+                    Some(vec!["A".to_string()])
+                }),
+            }
+        };
+        let (tx, opened, _) = fake_source(Some("A"));
+        let (sink, events) = sink();
+        let session =
+            Session::new(vec![spec(SourceKind::System, None, opened, no_reopen())], fake_transcriber(), sink, env, clock.now()).unwrap();
+        for _ in 0..25 {
+            wait_for(&events, |e| matches!(e, SessionEvent::Level { .. }));
+        }
+        drop(tx);
+        let _ = session.stop();
+        assert!(default_calls.load(Ordering::SeqCst) > 0);
+        assert_eq!(list_calls.load(Ordering::SeqCst), 0);
+    }
+
     #[test]
     fn retry_delays_double_from_half_a_second() {
         // Ciclos de 100 ms antes da 1ª, 2ª e 3ª tentativa: 0,5 s, 1 s, 2 s.
@@ -979,8 +1198,11 @@ mod tests {
                     tx.send(SourceMsg::Failed(message.into())).unwrap();
                 }
                 let _ = called_tx.send(n);
-                let capture = FakeCapture { output: None, dropped: Arc::new(AtomicBool::new(false)) };
-                Ok(Opened { capture: Box::new(capture), rx })
+                let capture = FakeCapture {
+                    binding: OutputBinding::None,
+                    dropped: Arc::new(AtomicBool::new(false)),
+                };
+                Ok(Opened { capture: Box::new(capture), rx, notice: None })
             })
         };
         (reopen, called_rx, calls)

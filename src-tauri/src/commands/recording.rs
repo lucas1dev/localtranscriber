@@ -9,7 +9,7 @@ use tauri::{AppHandle, Emitter, Manager, State};
 
 use crate::commands::transcription::{claim_slot, validate_request, SlotGuard};
 use crate::error::AppError;
-use crate::record::devices::{self, AudioInput, OpenSource, SourceKind, SourceMsg};
+use crate::record::devices::{self, AudioInput, OpenSource, SourceKind, SourceMsg, OUTPUT_FALLBACK};
 use crate::record::permissions;
 use crate::record::session::{
     Env, Opened, Reopen, Session, SessionEvent, Sink, SourceSpec, Transcriber,
@@ -51,10 +51,14 @@ impl Mode {
         }
     }
 
-    fn source_name(self, mic_name: &str) -> String {
+    /// `output_name` é a saída escolhida (só conta no modo Som do computador).
+    fn source_name(self, mic_name: &str, output_name: Option<&str>) -> String {
         match self {
             Mode::Mic => format!("Microfone — {mic_name}"),
-            Mode::System => "Som do computador".into(),
+            Mode::System => match output_name {
+                Some(name) => format!("Som do computador — {name}"),
+                None => "Som do computador".into(),
+            },
             Mode::Both => "Microfone + som do computador".into(),
         }
     }
@@ -94,16 +98,31 @@ impl RecordingHandle {
     }
 }
 
+/// `device_id`: o microfone para `Mic`, a saída escolhida para `System`.
 fn open_source(
     kind: SourceKind,
-    mic_id: Option<&str>,
+    device_id: Option<&str>,
 ) -> Result<(OpenSource, Receiver<SourceMsg>), AppError> {
     let (tx, rx) = mpsc::sync_channel(SOURCE_QUEUE);
-    let device_id = match kind {
-        SourceKind::Mic => mic_id,
-        SourceKind::System => None,
-    };
     Ok((devices::open(kind, device_id, tx)?, rx))
+}
+
+/// Decide a saída da próxima abertura do som do computador. `chosen` é a saída
+/// escolhida ainda em uso; `present` a listagem atual (`None` se falhou). Se a
+/// escolhida sumiu, zera `chosen` (a sessão fica na primeira opção até o fim) e
+/// devolve o aviso, uma vez só.
+fn next_output(
+    chosen: &mut Option<String>,
+    present: Option<&[String]>,
+) -> (Option<String>, Option<String>) {
+    match chosen {
+        Some(id) if present.is_none_or(|l| l.contains(id)) => (Some(id.clone()), None),
+        Some(_) => {
+            *chosen = None;
+            (None, Some(OUTPUT_FALLBACK.to_string()))
+        }
+        None => (None, None),
+    }
 }
 
 /// Abre as fontes e começa a sessão (bloqueante). Devolve a sessão e o `sourceName`.
@@ -115,6 +134,7 @@ fn begin(
     language: String,
     mode: Mode,
     mic_id: Option<String>,
+    output_id: Option<String>,
     cancel: Arc<AtomicBool>,
     sink: Sink,
 ) -> Result<(Session, String), AppError> {
@@ -130,6 +150,14 @@ fn begin(
             .ok_or_else(|| AppError::User("Nenhum microfone encontrado.".into()))?;
         Some(chosen.id.clone())
     };
+    // Saída salva que não existe mais: a primeira opção, sem aviso. Só a escolhida
+    // que some no meio da gravação avisa (ver `next_output`).
+    let output = if mode == Mode::Mic {
+        None
+    } else {
+        let outputs = devices::list_outputs()?;
+        devices::resolve_output(&outputs, output_id.as_deref()).cloned()
+    };
     // Zero do relógio comum antes de abrir a primeira fonte: o que ela grava
     // enquanto a outra abre conta do zero, e a outra é completada com silêncio.
     let env = Env::system();
@@ -137,20 +165,34 @@ fn begin(
     let mut specs = Vec::new();
     let mut mic_name = String::new();
     for &(kind, speaker) in mode.sources() {
+        let device_id = match kind {
+            SourceKind::Mic => mic_id.clone(),
+            SourceKind::System => output.as_ref().map(|o| o.id.clone()),
+        };
         // Se a segunda fonte falhar, a primeira é solta junto com `specs`.
-        let (source, rx) = open_source(kind, mic_id.as_deref())?;
+        let (source, rx) = open_source(kind, device_id.as_deref())?;
         if kind == SourceKind::Mic {
             mic_name = source.device_name().to_string();
         }
-        let reopen_id = mic_id.clone();
-        let reopen: Reopen = Box::new(move || {
-            let (source, rx) = open_source(kind, reopen_id.as_deref())?;
-            Ok(Opened { capture: Box::new(source), rx })
-        });
+        let reopen: Reopen = match kind {
+            SourceKind::Mic => Box::new(move || {
+                let (source, rx) = open_source(kind, device_id.as_deref())?;
+                Ok(Opened { capture: Box::new(source), rx, notice: None })
+            }),
+            SourceKind::System => {
+                let mut chosen = device_id;
+                Box::new(move || {
+                    let present = if chosen.is_some() { devices::output_ids() } else { None };
+                    let (id, notice) = next_output(&mut chosen, present.as_deref());
+                    let (source, rx) = open_source(kind, id.as_deref())?;
+                    Ok(Opened { capture: Box::new(source), rx, notice })
+                })
+            }
+        };
         specs.push(SourceSpec {
             kind,
             speaker,
-            opened: Opened { capture: Box::new(source), rx },
+            opened: Opened { capture: Box::new(source), rx, notice: None },
             reopen,
         });
     }
@@ -165,7 +207,8 @@ fn begin(
         )
     });
     let session = Session::new(specs, transcriber, sink, env, start)?;
-    Ok((session, mode.source_name(&mic_name)))
+    let output_name = output.as_ref().map(|o| o.name.as_str());
+    Ok((session, mode.source_name(&mic_name, output_name)))
 }
 
 /// Nome e corpo do evento da interface.
@@ -177,16 +220,25 @@ fn event_payload(event: SessionEvent) -> (&'static str, Value) {
         SessionEvent::Level { mic, system } => {
             ("record://level", json!({ "mic": mic, "system": system }))
         }
+        SessionEvent::Notice { message } => ("record://notice", json!({ "message": message })),
         SessionEvent::Error { message } => ("record://error", json!({ "message": message })),
     }
 }
 
-/// Guarda a fonte escolhida; o microfone só muda quando ele é usado.
-fn remember_choice(current: &Settings, source: &str, mic_id: Option<&str>) -> Settings {
+/// Guarda a fonte escolhida; o microfone e a saída só mudam quando são usados.
+fn remember_choice(
+    current: &Settings,
+    source: &str,
+    mic_id: Option<&str>,
+    output_id: Option<&str>,
+) -> Settings {
     let mut next = current.clone();
     next.record_source = source.to_string();
     if source != "system" {
         next.record_mic_id = mic_id.map(str::to_string);
+    }
+    if source != "mic" {
+        next.record_output_id = output_id.map(str::to_string);
     }
     next
 }
@@ -197,9 +249,10 @@ fn save_choice(
     file: &Path,
     source: &str,
     mic_id: Option<&str>,
+    output_id: Option<&str>,
 ) -> Result<(), AppError> {
     let mut current = settings.lock().unwrap_or_else(|e| e.into_inner());
-    let next = remember_choice(&current, source, mic_id);
+    let next = remember_choice(&current, source, mic_id, output_id);
     settings::save(file, &next)?;
     *current = next;
     Ok(())
@@ -241,11 +294,19 @@ pub async fn list_audio_inputs() -> Result<Vec<AudioInput>, AppError> {
 }
 
 #[tauri::command]
+pub async fn list_audio_outputs() -> Result<Vec<AudioInput>, AppError> {
+    tokio::task::spawn_blocking(devices::list_outputs)
+        .await
+        .map_err(|e| AppError::Internal(format!("Falha ao listar as saídas de som: {e}")))?
+}
+
+#[tauri::command]
 pub async fn start_recording(
     app: AppHandle,
     state: State<'_, Arc<AppState>>,
     source: String,
     mic_id: Option<String>,
+    output_id: Option<String>,
     model: String,
     language: String,
 ) -> Result<(), AppError> {
@@ -254,7 +315,13 @@ pub async fn start_recording(
     let model_path = validate_request(&state.paths.models_dir, &model, &language)?;
     // Erro daqui em diante solta `slot` e libera o espaço.
     let slot = claim_slot(&state.transcription_cancel)?;
-    save_choice(&state.settings, &state.paths.settings_file, &source, mic_id.as_deref())?;
+    save_choice(
+        &state.settings,
+        &state.paths.settings_file,
+        &source,
+        mic_id.as_deref(),
+        output_id.as_deref(),
+    )?;
 
     let engine = Arc::clone(&state.engine);
     let cancel = slot.cancel();
@@ -264,7 +331,7 @@ pub async fn start_recording(
     });
     let (m, l) = (model.clone(), language.clone());
     let (session, source_name) = tokio::task::spawn_blocking(move || {
-        begin(engine, model_path, m, l, mode, mic_id, cancel, sink)
+        begin(engine, model_path, m, l, mode, mic_id, output_id, cancel, sink)
     })
     .await
     .map_err(|e| AppError::Internal(format!("Falha ao começar a gravação: {e}")))??;
@@ -326,9 +393,10 @@ mod tests {
     #[test]
     fn modes_parse_and_name_the_source() {
         assert!(matches!(Mode::parse("xyz"), Err(AppError::User(m)) if m == "Fonte de gravação inválida."));
-        assert_eq!(Mode::parse("mic").unwrap().source_name("MacBook Pro Microfone"), "Microfone — MacBook Pro Microfone");
-        assert_eq!(Mode::parse("system").unwrap().source_name(""), "Som do computador");
-        assert_eq!(Mode::parse("both").unwrap().source_name("X"), "Microfone + som do computador");
+        assert_eq!(Mode::parse("mic").unwrap().source_name("MacBook Pro Microfone", None), "Microfone — MacBook Pro Microfone");
+        assert_eq!(Mode::parse("system").unwrap().source_name("", None), "Som do computador");
+        assert_eq!(Mode::System.source_name("", Some("Fones")), "Som do computador — Fones");
+        assert_eq!(Mode::parse("both").unwrap().source_name("X", Some("Fones")), "Microfone + som do computador");
         assert_eq!(
             Mode::Both.sources(),
             [(SourceKind::Mic, Some("voce")), (SourceKind::System, Some("reuniao"))]
@@ -351,6 +419,10 @@ mod tests {
             ("record://level", json!({ "mic": 0.5, "system": null }))
         );
         assert_eq!(
+            event_payload(SessionEvent::Notice { message: "aviso".into() }),
+            ("record://notice", json!({ "message": "aviso" }))
+        );
+        assert_eq!(
             event_payload(SessionEvent::Error { message: "x".into() }),
             ("record://error", json!({ "message": "x" }))
         );
@@ -359,12 +431,43 @@ mod tests {
     #[test]
     fn choice_keeps_mic_when_recording_only_the_computer() {
         let current = Settings { record_mic_id: Some("m1".into()), ..Settings::default() };
-        let s = remember_choice(&current, "system", None);
+        let s = remember_choice(&current, "system", None, None);
         assert_eq!((s.record_source.as_str(), s.record_mic_id.as_deref()), ("system", Some("m1")));
-        let s = remember_choice(&current, "both", Some("m2"));
+        let s = remember_choice(&current, "both", Some("m2"), None);
         assert_eq!((s.record_source.as_str(), s.record_mic_id.as_deref()), ("both", Some("m2")));
-        let s = remember_choice(&current, "mic", None);
+        let s = remember_choice(&current, "mic", None, None);
         assert_eq!(s.record_mic_id, None);
+    }
+
+    #[test]
+    fn choice_stores_the_output_only_when_the_computer_is_recorded() {
+        let current = Settings { record_output_id: Some("o1".into()), ..Settings::default() };
+        let s = remember_choice(&current, "system", None, Some("o2"));
+        assert_eq!(s.record_output_id.as_deref(), Some("o2"));
+        let s = remember_choice(&current, "both", Some("m"), Some("o3"));
+        assert_eq!(s.record_output_id.as_deref(), Some("o3"));
+        // Primeira opção escolhida: apaga a saída salva.
+        let s = remember_choice(&current, "system", None, None);
+        assert_eq!(s.record_output_id, None);
+        // Microfone puro não mexe na saída salva.
+        let s = remember_choice(&current, "mic", Some("m"), Some("ignorada"));
+        assert_eq!(s.record_output_id.as_deref(), Some("o1"));
+    }
+
+    #[test]
+    fn next_output_falls_back_once_and_stays() {
+        let ids = |l: &[&str]| l.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        let mut chosen = Some("a".to_string());
+        // Presente, ou listagem que falhou: continua presa, sem aviso.
+        assert_eq!(next_output(&mut chosen, Some(&ids(&["a", "b"]))), (Some("a".into()), None));
+        assert_eq!(next_output(&mut chosen, None), (Some("a".into()), None));
+        // Sumiu: primeira opção, com um aviso.
+        assert_eq!(
+            next_output(&mut chosen, Some(&ids(&["b"]))),
+            (None, Some(OUTPUT_FALLBACK.to_string()))
+        );
+        // Mesmo que ela volte, a sessão fica na primeira opção, sem novo aviso.
+        assert_eq!(next_output(&mut chosen, Some(&ids(&["a", "b"]))), (None, None));
     }
 
     #[test]
@@ -372,14 +475,15 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let settings = Mutex::new(Settings::default());
         let file = dir.path().join("settings.json");
-        save_choice(&settings, &file, "both", Some("m1")).unwrap();
+        save_choice(&settings, &file, "both", Some("m1"), Some("o1")).unwrap();
         assert_eq!(settings.lock().unwrap().record_source, "both");
         assert_eq!(crate::settings::load(&file).record_mic_id.as_deref(), Some("m1"));
+        assert_eq!(crate::settings::load(&file).record_output_id.as_deref(), Some("o1"));
 
         // Um diretório no lugar do arquivo: salvar falha, o erro sobe e a memória fica igual.
         let blocked = dir.path().join("bloqueado");
         std::fs::create_dir(&blocked).unwrap();
-        assert!(save_choice(&settings, &blocked, "system", None).is_err());
+        assert!(save_choice(&settings, &blocked, "system", None, None).is_err());
         assert_eq!(settings.lock().unwrap().record_source, "both");
     }
 
@@ -467,6 +571,7 @@ mod tests {
             model.into(),
             "auto".into(),
             Mode::Mic,
+            None,
             None,
             Arc::new(AtomicBool::new(false)),
             sink,

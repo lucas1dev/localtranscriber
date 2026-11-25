@@ -1160,6 +1160,96 @@ mod tests {
         assert!(packets > 0, "nenhum pacote recebido");
     }
 
+    /// Saída que NÃO é a padrão, presa: um seno tocado nela chega; o som só da
+    /// padrão não chega. Precisa de dispositivos reais (Mac: `afplay`, e de preferência
+    /// um dispositivo virtual como o BlackHole).
+    #[test]
+    #[ignore]
+    #[cfg(target_os = "macos")]
+    fn real_pinned_non_default_output() {
+        use std::sync::atomic::AtomicBool;
+        use std::time::Instant;
+
+        let outputs = list_outputs().expect("listar saídas");
+        let others: Vec<_> = outputs.iter().filter(|o| !o.is_default).collect();
+        let Some(target) = others
+            .iter()
+            .find(|o| o.name.contains("BlackHole"))
+            .or(others.first())
+        else {
+            println!("sem saída que não seja a padrão: teste pulado");
+            return;
+        };
+        println!("saída escolhida: {:?} id={}", target.name, target.id);
+
+        let (tx, rx) = mpsc::sync_channel(256);
+        let src = open(SourceKind::System, Some(&target.id), tx).expect("abrir preso");
+        assert_eq!(src.binding(), &OutputBinding::Pinned(target.id.clone()));
+
+        let drain = |secs: u64| -> (usize, f32) {
+            let (mut packets, mut peak) = (0usize, 0f32);
+            let start = Instant::now();
+            while start.elapsed() < Duration::from_secs(secs) {
+                while let Ok(msg) = rx.try_recv() {
+                    match msg {
+                        SourceMsg::Pcm(p) => {
+                            packets += 1;
+                            peak = p.iter().fold(peak, |m, s| m.max(s.abs()));
+                        }
+                        SourceMsg::Failed(m) => panic!("falhou: {m}"),
+                    }
+                }
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            (packets, peak)
+        };
+
+        // 1. Seno de 440 Hz só na saída escolhida.
+        let device = find_output(&target.id).expect("achar a saída");
+        let config = device.default_output_config().expect("config de saída");
+        let (rate, channels) = (config.sample_rate() as f32, config.channels() as usize);
+        let mut n = 0u64;
+        let stream = device
+            .build_output_stream::<f32, _, _>(
+                config.config(),
+                move |data: &mut [f32], _: &cpal::OutputCallbackInfo| {
+                    for frame in data.chunks_mut(channels) {
+                        let v = (2.0 * std::f32::consts::PI * 440.0 * n as f32 / rate).sin() * 0.5;
+                        n += 1;
+                        frame.iter_mut().for_each(|s| *s = v);
+                    }
+                },
+                |e| eprintln!("erro de saída: {e}"),
+                None,
+            )
+            .expect("abrir saída de teste");
+        stream.play().expect("tocar");
+        let (packets, peak) = drain(2);
+        drop(stream);
+        println!("seno na escolhida: pacotes {packets}, pico {peak:.4}");
+        assert!(peak > 0.05, "a saída escolhida não entregou o seno (pico {peak})");
+
+        // 2. Som só na padrão: a captura presa não pode ouvi-lo.
+        let _ = drain(1); // deixa o resto do seno passar
+        let stop = Arc::new(AtomicBool::new(false));
+        let player = {
+            let stop = stop.clone();
+            std::thread::spawn(move || {
+                while !stop.load(Ordering::Relaxed) {
+                    let _ = std::process::Command::new("afplay")
+                        .arg("/System/Library/Sounds/Glass.aiff")
+                        .status();
+                }
+            })
+        };
+        let (packets, peak) = drain(2);
+        stop.store(true, Ordering::Relaxed);
+        player.join().unwrap();
+        println!("som na padrão: pacotes {packets}, pico {peak:.4}");
+        assert!(packets > 0, "nenhum pacote recebido");
+        assert!(peak < 0.01, "a captura presa ouviu outra saída (pico {peak})");
+    }
+
     #[test]
     fn list_inputs_does_not_panic() {
         // Os runners do CI não têm áudio: Ok vazio ou Err são válidos.

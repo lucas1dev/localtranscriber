@@ -7,7 +7,7 @@ import {
 import {
   SILENCE_HINT, SPEAKER_LABEL, createRecorder, isMacUserAgent, levelPercent, liveLine, outputOptions, pickMicId,
   pickOutputId, pickSource, recordingFailure, recordingResult, showHeadphoneHint, showMicPicker, showOutputNote, showOutputPicker,
-  showSilenceHint, silenceHintText,
+  showSilenceHint, silenceHintText, currentOutputId, isPinned,
 } from '../recorder.js';
 
 export const LANGUAGES = [

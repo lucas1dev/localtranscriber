@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   SPEAKER_LABEL, liveLine, levelPercent, pickSource, showMicPicker, showHeadphoneHint, pickMicId, createRecorder,
+  showOutputPicker, pickOutputId, firstOutputLabel, outputOptions, PINNED_SILENCE_HINT, silenceHintText,
   isMacUserAgent, silenceHint, showSilenceHint, SILENCE_HINT, SILENCE_HINT_MS, afterRecording, recordingResult, recordingFailure,
 } from '../js/recorder.js';
 import { afterTranscribe, initialState } from '../js/flow.js';
@@ -99,7 +100,7 @@ test('eventos fora da gravação são ignorados e os ouvintes saem no stop', asy
   await started;
   f.handlers['record://text']({ speaker: null, text: 'a' });
   await rec.stop();
-  assert.deepEqual(f.off.sort(), ['record://error', 'record://level', 'record://text']);
+  assert.deepEqual(f.off.sort(), ['record://error', 'record://level', 'record://notice', 'record://text']);
   f.handlers['record://text']({ speaker: null, text: 'b' });
   f.handlers['record://level']({ mic: 1 });
   f.handlers['record://error']({ message: 'z' });
@@ -111,7 +112,7 @@ test('start que falha solta os ouvintes e repassa o erro', async () => {
   f.deps.api.startRecording = async () => { throw new Error('boom'); };
   const rec = createRecorder({ onText() {}, onLevel() {}, onError() {} }, f.deps);
   await assert.rejects(rec.start({ source: 'mic', micId: null, model: 'm', language: 'pt' }), /boom/);
-  assert.equal(f.off.length, 3);
+  assert.equal(f.off.length, 4);
   assert.equal(rec.starting, false);
 });
 
@@ -177,4 +178,55 @@ test('erro da sessão durante o stop da pessoa chega ao onError e sobrevive ao r
 test('recordingFailure junta o erro da sessão e o do stop', () => {
   assert.equal(recordingFailure(null, 'falhou'), 'falhou');
   assert.equal(recordingFailure('mic caiu', 'falhou'), 'mic caiu (falhou)');
+});
+
+test('showOutputPicker: só fora do modo Microfone', () => {
+  assert.equal(showOutputPicker('mic'), false);
+  assert.equal(showOutputPicker('system'), true);
+  assert.equal(showOutputPicker('both'), true);
+});
+
+test('pickOutputId: salvo se existir, senão null', () => {
+  const list = [{ id: 'a' }, { id: 'b' }];
+  assert.equal(pickOutputId(list, 'b'), 'b');
+  assert.equal(pickOutputId(list, 'zzz'), null);
+  assert.equal(pickOutputId(list, undefined), null);
+  assert.equal(pickOutputId(list, null), null);
+  assert.equal(pickOutputId([], 'b'), null);
+});
+
+test('outputOptions e firstOutputLabel', () => {
+  const list = [{ id: 'a', name: 'Fones', is_default: true }, { id: 'b', name: 'Caixas', is_default: false }];
+  assert.equal(firstOutputLabel(true), 'Todas as saídas');
+  assert.equal(firstOutputLabel(false), 'Saída padrão');
+  assert.deepEqual(outputOptions(list, true), [
+    { value: '', text: 'Todas as saídas' }, { value: 'a', text: 'Fones (padrão)' }, { value: 'b', text: 'Caixas' },
+  ]);
+  assert.deepEqual(outputOptions([], false), [{ value: '', text: 'Saída padrão' }]);
+});
+
+test('silêncio com saída escolhida aparece também no Windows', () => {
+  const base = { source: 'system', peak: 0, elapsedMs: 12_000 };
+  assert.equal(showSilenceHint({ ...base, mac: false, pinned: true }), true);
+  assert.equal(showSilenceHint({ ...base, mac: false, pinned: false }), false);
+  assert.equal(showSilenceHint({ ...base, mac: true, pinned: false }), true);
+  assert.equal(showSilenceHint({ ...base, mac: false, pinned: true, source: 'mic' }), false);
+  assert.equal(PINNED_SILENCE_HINT, 'Nada do som do computador até agora. Confira se a reunião está tocando na saída escolhida.');
+  assert.equal(silenceHintText({ pinned: true }), PINNED_SILENCE_HINT);
+  assert.equal(silenceHintText({ pinned: false }), SILENCE_HINT);
+});
+
+test('createRecorder: record://notice só durante a gravação e outputId vai na 3ª posição', async () => {
+  const f = fakeDeps();
+  const notes = [];
+  const rec = createRecorder({ onText() {}, onLevel() {}, onError() {}, onNotice: (m) => notes.push(m) }, f.deps);
+  const started = rec.start({ source: 'system', micId: null, outputId: 'coreaudio:X', model: 'm', language: 'pt' });
+  await new Promise((r) => setImmediate(r));
+  f.release();
+  await started;
+  assert.deepEqual(f.calls[0], ['start', 'system', null, 'coreaudio:X', 'm', 'pt']);
+  f.handlers['record://notice']({ message: 'caiu' });
+  await rec.stop();
+  f.handlers['record://notice']({ message: 'depois' });
+  assert.deepEqual(notes, ['caiu']);
 });

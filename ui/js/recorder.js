@@ -40,8 +40,29 @@ export function silenceHint({ peak, elapsedMs }) {
   return elapsedMs >= SILENCE_HINT_MS && !(peak >= SILENT_LEVEL);
 }
 
-export function showSilenceHint({ mac, source, peak, elapsedMs }) {
-  return mac && usesSystem(source) && silenceHint({ peak, elapsedMs });
+export const PINNED_SILENCE_HINT = 'Nada do som do computador até agora. Confira se a reunião está tocando na saída escolhida.';
+
+// Com saída escolhida (`pinned`) o silêncio também vale fora do macOS: pode ser a saída errada.
+export function showSilenceHint({ mac, source, peak, elapsedMs, pinned }) {
+  return (mac || !!pinned) && usesSystem(source) && silenceHint({ peak, elapsedMs });
+}
+
+export const silenceHintText = ({ pinned }) => (pinned ? PINNED_SILENCE_HINT : SILENCE_HINT);
+
+export const showOutputPicker = (source) => source !== 'mic';
+
+// Saída salva, se ainda existir; senão a primeira opção (null).
+export function pickOutputId(outputs, savedId) {
+  return savedId && outputs.some((o) => o.id === savedId) ? savedId : null;
+}
+
+export const firstOutputLabel = (mac) => (mac ? 'Todas as saídas' : 'Saída padrão');
+
+export function outputOptions(outputs, mac) {
+  return [
+    { value: '', text: firstOutputLabel(mac) },
+    ...outputs.map((o) => ({ value: o.id, text: o.is_default ? `${o.name} (padrão)` : o.name })),
+  ];
 }
 
 const NO_SYSTEM_AUDIO = ' Se o som do computador não foi captado, confira a permissão em Ajustes do Sistema → Privacidade e Segurança → Gravação de áudio do sistema.';
@@ -78,7 +99,7 @@ export function recordingFailure(sessionError, stopError) {
 // Uma gravação por vez. Os ouvintes só existem entre start() e o fim de stop(),
 // e eventos que chegam fora desse intervalo são ignorados.
 // `deps` permite trocar api/on nos testes.
-export function createRecorder({ onText, onLevel, onError }, deps = { api, on }) {
+export function createRecorder({ onText, onLevel, onError, onNotice }, deps = { api, on }) {
   const { api: backend, on: listen } = deps;
   let active = false;
   let starting = false;
@@ -89,6 +110,7 @@ export function createRecorder({ onText, onLevel, onError }, deps = { api, on })
     const subs = [
       listen('record://text', (p) => { if (active) onText(p); }),
       listen('record://level', (p) => { if (active) onLevel(p); }),
+      listen('record://notice', (p) => { if (active && p?.message) onNotice?.(p.message); }),
       listen('record://error', (p) => {
         if (!active) return;
         const message = p?.message || 'A gravação foi interrompida.';
@@ -110,13 +132,13 @@ export function createRecorder({ onText, onLevel, onError }, deps = { api, on })
   return {
     get starting() { return starting; },
     // Devolve a mensagem de um erro de sessão ocorrido durante a abertura (ou null).
-    async start({ source, micId, model, language }) {
+    async start({ source, micId, outputId = null, model, language }) {
       starting = true;
       pendingError = null;
       try {
         await subscribe();
         active = true;
-        await backend.startRecording(source, micId, model, language);
+        await backend.startRecording(source, micId, outputId, model, language);
       } catch (e) {
         unsubscribe();
         throw e;

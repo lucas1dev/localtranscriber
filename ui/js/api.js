@@ -17,7 +17,8 @@ export const api = {
 
   transcribeFile: (path, model, language) => invoke('transcribe_file', { path, model, language }),
   listAudioInputs: () => invoke('list_audio_inputs'),
-  startRecording: (source, micId, model, language) => invoke('start_recording', { source, micId, model, language }),
+  listAudioOutputs: () => invoke('list_audio_outputs'),
+  startRecording: (source, micId, outputId, model, language) => invoke('start_recording', { source, micId, outputId, model, language }),
   stopRecording: () => invoke('stop_recording'),
   confirmClose: () => invoke('confirm_close'),
   cancelTranscription: () => invoke('cancel_transcription'),

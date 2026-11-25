@@ -5,8 +5,9 @@ import {
   afterTranscribe, failJob, needsReplaceConfirm, openSettings, pasteText, startJob,
 } from '../flow.js';
 import {
-  SILENCE_HINT, SPEAKER_LABEL, createRecorder, isMacUserAgent, levelPercent, liveLine, pickMicId,
-  pickSource, recordingFailure, recordingResult, showHeadphoneHint, showMicPicker, showSilenceHint,
+  SILENCE_HINT, SPEAKER_LABEL, createRecorder, isMacUserAgent, levelPercent, liveLine, outputOptions, pickMicId,
+  pickOutputId, pickSource, recordingFailure, recordingResult, showHeadphoneHint, showMicPicker, showOutputPicker,
+  showSilenceHint, silenceHintText,
 } from '../recorder.js';
 
 export const LANGUAGES = [
@@ -26,9 +27,9 @@ export function mountStepAudio(root, store) {
   const mac = isMacUserAgent(navigator.userAgent);
   const ui = {
     tab: 'file', path: null, model: '', language: null, confirming: false, micRunning: false, micStopping: false, starting: false, elapsed: 0,
-    source: null, inputs: [], micId: null, inputsLoaded: false,
+    source: null, inputs: [], micId: null, inputsLoaded: false, outputs: [], outputId: null,
     // Gravação em andamento: fonte usada, quando começou e o maior nível de Reunião.
-    recSource: null, startedAt: 0, systemPeak: 0,
+    recSource: null, recOutputId: null, startedAt: 0, systemPeak: 0,
   };
   let recorder = null;
   // Erro que a sessão avisou na gravação atual; sobrevive ao resultado de stop().
@@ -59,8 +60,11 @@ export function mountStepAudio(root, store) {
   const micSel = h('select', { id: 'mic-sel', onChange: () => { ui.micId = micSel.value || null; } });
   const refreshBtn = h('button', { class: 'btn', type: 'button', text: '↻', title: 'Recarregar microfones', 'aria-label': 'Recarregar microfones', onClick: () => loadInputs() });
   const micRow = h('div', { class: 'mic-row' }, h('label', { for: 'mic-sel', text: 'Microfone' }), micSel, refreshBtn);
+  const outputSel = h('select', { id: 'output-sel', onChange: () => { ui.outputId = outputSel.value || null; } });
+  const outputRefreshBtn = h('button', { class: 'btn', type: 'button', text: '↻', title: 'Recarregar saídas de som', 'aria-label': 'Recarregar saídas de som', onClick: () => loadOutputs() });
+  const outputRow = h('div', { class: 'mic-row output-row' }, h('label', { for: 'output-sel', text: 'Saída de som' }), outputSel, outputRefreshBtn);
   const hint = h('div', { class: 'hint', text: 'Use fone de ouvido para a fala dos outros não ser gravada duas vezes.' });
-  const setupBox = h('div', { class: 'record-setup' }, sourceRow, micRow, hint);
+  const setupBox = h('div', { class: 'record-setup' }, sourceRow, micRow, outputRow, hint);
 
   const recDot = h('span', { class: 'rec-dot', 'aria-hidden': 'true' });
   const recText = h('span', { class: 'rec-text', text: 'Gravando' });
@@ -73,9 +77,10 @@ export function mountStepAudio(root, store) {
   };
   const levels = h('div', { class: 'levels' }, levelRows.voce, levelRows.reuniao);
   const silenceNote = h('div', { class: 'hint', text: SILENCE_HINT, hidden: true });
+  const outputNote = h('div', { class: 'hint', 'aria-live': 'polite', hidden: true });
   const micLive = h('div', { class: 'mic-live', 'aria-live': 'polite' });
   const micBtn = h('button', { class: 'btn primary', type: 'button', onClick: toggleMic });
-  const micPane = h('div', { class: 'pane' }, setupBox, recStatus, levels, silenceNote, micLive, micBtn);
+  const micPane = h('div', { class: 'pane' }, setupBox, recStatus, levels, silenceNote, outputNote, micLive, micBtn);
 
   const modelSel = h('select', { id: 'model-sel', onChange: () => { ui.model = modelSel.value; render(); } });
   const langSel = h('select', { id: 'lang-sel', onChange: () => { ui.language = langSel.value; } },
@@ -118,7 +123,7 @@ export function mountStepAudio(root, store) {
   function setTab(tab) {
     if (store.get().job) return;
     ui.tab = tab;
-    if (tab === 'mic' && !ui.inputsLoaded) loadInputs();
+    if (tab === 'mic' && !ui.inputsLoaded) { loadInputs(); loadOutputs(); }
     render();
   }
 
@@ -134,6 +139,19 @@ export function mountStepAudio(root, store) {
     } catch (e) {
       store.set({ error: errorMessage(e) });
     }
+  }
+
+  // Carrega as saídas de som; se falhar, o seletor fica só com a primeira opção.
+  async function loadOutputs() {
+    try {
+      ui.outputs = await api.listAudioOutputs();
+    } catch (e) {
+      console.error(e);
+      ui.outputs = [];
+    }
+    ui.outputId = pickOutputId(ui.outputs, ui.outputId ?? store.get().settings?.record_output_id);
+    outputSel.replaceChildren(...outputOptions(ui.outputs, mac).map((o) => h('option', { value: o.value, text: o.text })));
+    outputSel.value = ui.outputId || '';
   }
 
   async function pickFile() {
@@ -184,8 +202,10 @@ export function mountStepAudio(root, store) {
   }
 
   function syncSilenceNote() {
+    const pinned = !!ui.recOutputId;
+    silenceNote.textContent = silenceHintText({ pinned });
     silenceNote.hidden = !(ui.micRunning && !ui.micStopping && showSilenceHint({
-      mac, source: ui.recSource, peak: ui.systemPeak, elapsedMs: Date.now() - ui.startedAt,
+      mac, source: ui.recSource, peak: ui.systemPeak, elapsedMs: Date.now() - ui.startedAt, pinned,
     }));
   }
 
@@ -211,6 +231,7 @@ export function mountStepAudio(root, store) {
     recorder = createRecorder({
       onText: appendLive,
       onLevel: setLevels,
+      onNotice: (message) => { outputNote.textContent = message; outputNote.hidden = false; },
       // O backend já encerrou a sessão: mostra o aviso e recolhe o resultado parcial.
       // Durante a abertura (`deferred`) a coleta espera start() terminar.
       onError: (message, deferred) => {
@@ -221,12 +242,16 @@ export function mountStepAudio(root, store) {
     });
     const source = ui.source || pickSource(store.get().settings);
     ui.recSource = source;
+    const outputId = showOutputPicker(source) ? ui.outputId : null;
+    ui.recOutputId = outputId;
+    outputNote.textContent = '';
+    outputNote.hidden = true;
     ui.systemPeak = 0;
     ui.starting = true;
     render();
     let pending;
     try {
-      pending = await recorder.start({ source, micId: showMicPicker(source) ? ui.micId : null, model: ui.model, language: ui.language });
+      pending = await recorder.start({ source, micId: showMicPicker(source) ? ui.micId : null, outputId, model: ui.model, language: ui.language });
     } catch (e) {
       recorder = null;
       ui.starting = false;
@@ -237,7 +262,8 @@ export function mountStepAudio(root, store) {
     // Lembra a escolha (o backend já salvou).
     const cur = store.get().settings;
     if (cur) {
-      store.set({ settings: { ...cur, record_source: source, record_mic_id: showMicPicker(source) ? ui.micId : cur.record_mic_id } });
+      store.set({ settings: { ...cur, record_source: source, record_mic_id: showMicPicker(source) ? ui.micId : cur.record_mic_id,
+        record_output_id: showOutputPicker(source) ? ui.outputId : cur.record_output_id } });
     }
     ui.micRunning = true;
     ui.startedAt = Date.now();
@@ -320,6 +346,8 @@ export function mountStepAudio(root, store) {
     for (const r of sourceRadios) { r.input.checked = r.value === source; r.input.disabled = busy; }
     micRow.hidden = !showMicPicker(source);
     micSel.disabled = refreshBtn.disabled = busy;
+    outputRow.hidden = !showOutputPicker(source);
+    outputSel.disabled = outputRefreshBtn.disabled = busy;
     hint.hidden = !showHeadphoneHint(source);
     setupBox.hidden = ui.micRunning;
     // Indicador: some quando parado; pulsa gravando; parado e sem barras em "Finalizando…"

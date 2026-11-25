@@ -31,7 +31,7 @@ A transcrição roda 100% no seu computador, sem internet depois que o modelo é
 Na aba **Gravar** do passo ①, escolha a fonte:
 
 - **Microfone:** grava o microfone escolhido na lista (o padrão do sistema vem marcado; o botão ↻ recarrega a lista).
-- **Som do computador:** grava o que está tocando no computador (reunião, vídeo, aula).
+- **Som do computador:** grava o que está tocando no computador (reunião, vídeo, aula). Com **Saída de som** você escolhe qual saída gravar (por exemplo, o fone da reunião); se a escolhida for desconectada no meio, a gravação continua na primeira opção (todas as saídas no macOS, a saída padrão no Windows) e o app avisa.
 - **Microfone + som do computador:** grava os dois ao mesmo tempo. No texto, cada fala vem etiquetada: **Você** (microfone) e **Reunião** (som do computador). As etiquetas também aparecem nas legendas SRT e no texto enviado para o resumo.
 
 Enquanto grava, uma bolinha vermelha pulsa ao lado do cronômetro e uma barra de nível por fonte mostra se há som entrando. Barra parada em "Reunião" significa que nada está tocando no computador ou, no macOS, que falta a permissão para gravar o som do computador; parada em "Você", que o microfone não está captando ou não tem permissão.

@@ -47,7 +47,18 @@ export function showSilenceHint({ mac, source, peak, elapsedMs, pinned }) {
   return (mac || !!pinned) && usesSystem(source) && silenceHint({ peak, elapsedMs });
 }
 
-export const silenceHintText = ({ pinned }) => (pinned ? PINNED_SILENCE_HINT : SILENCE_HINT);
+const PERMISSION_HINT = ' Se estiver, confira Ajustes do Sistema → Privacidade e Segurança → Gravação de áudio do sistema.';
+
+export function silenceHintText({ pinned, mac }) {
+  if (!pinned) return SILENCE_HINT;
+  return mac ? PINNED_SILENCE_HINT + PERMISSION_HINT : PINNED_SILENCE_HINT;
+}
+
+// Depois do aviso de queda a gravação já está na primeira opção: não vale mais "saída escolhida".
+export const isPinned = ({ outputId, notice }) => !!outputId && !notice;
+
+// `null` é uma escolha de verdade (primeira opção); a salva só vale no primeiro carregamento.
+export const currentOutputId = ({ loaded, current, saved }) => (loaded ? current : saved);
 
 export const showOutputNote = ({ running, message }) => !!running && !!message;
 

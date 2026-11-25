@@ -27,7 +27,7 @@ export function mountStepAudio(root, store) {
   const mac = isMacUserAgent(navigator.userAgent);
   const ui = {
     tab: 'file', path: null, model: '', language: null, confirming: false, micRunning: false, micStopping: false, starting: false, elapsed: 0,
-    source: null, inputs: [], micId: null, inputsLoaded: false, outputs: [], outputId: null, outputNotice: '',
+    source: null, inputs: [], micId: null, inputsLoaded: false, outputs: [], outputsLoaded: false, outputId: null, outputNotice: '',
     // Gravação em andamento: fonte usada, quando começou e o maior nível de Reunião.
     recSource: null, recOutputId: null, startedAt: 0, systemPeak: 0,
   };
@@ -149,7 +149,10 @@ export function mountStepAudio(root, store) {
       console.error(e);
       ui.outputs = [];
     }
-    ui.outputId = pickOutputId(ui.outputs, ui.outputId ?? store.get().settings?.record_output_id);
+    ui.outputId = pickOutputId(ui.outputs, currentOutputId({
+      loaded: ui.outputsLoaded, current: ui.outputId, saved: store.get().settings?.record_output_id,
+    }));
+    ui.outputsLoaded = true;
     outputSel.replaceChildren(...outputOptions(ui.outputs, mac).map((o) => h('option', { value: o.value, text: o.text })));
     outputSel.value = ui.outputId || '';
   }
@@ -202,8 +205,8 @@ export function mountStepAudio(root, store) {
   }
 
   function syncSilenceNote() {
-    const pinned = !!ui.recOutputId;
-    silenceNote.textContent = silenceHintText({ pinned });
+    const pinned = isPinned({ outputId: ui.recOutputId, notice: ui.outputNotice });
+    silenceNote.textContent = silenceHintText({ pinned, mac });
     silenceNote.hidden = !(ui.micRunning && !ui.micStopping && showSilenceHint({
       mac, source: ui.recSource, peak: ui.systemPeak, elapsedMs: Date.now() - ui.startedAt, pinned,
     }));

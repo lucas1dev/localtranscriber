@@ -1,6 +1,6 @@
 // Dispositivos de áudio: lista de microfones, captura do microfone (cpal) e do som
-// do computador em mono 16 kHz. O som do computador usa o process tap global do
-// Core Audio no Mac (`mac_tap`) e o loopback WASAPI da cpal no Windows.
+// do computador em mono 16 kHz. O som do computador usa o process tap do Core Audio
+// no Mac (`mac_tap`: global na primeira opção, por saída na escolhida) e o loopback WASAPI da cpal no Windows.
 //
 // O callback de áudio só converte as amostras para f32 (um `Vec` pequeno por
 // callback) e faz `try_send` para a thread de conversão do `OpenSource`; se a fila

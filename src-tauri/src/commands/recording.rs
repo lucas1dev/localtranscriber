@@ -129,7 +129,7 @@ impl SystemOutput {
         open: impl FnOnce(Option<&str>) -> Result<T, AppError>,
     ) -> Result<(T, Option<String>), AppError> {
         if let Some(id) = &self.chosen {
-            if present().is_some_and(|l| !l.contains(id)) {
+            if present().is_some_and(|l| !l.is_empty() && !l.contains(id)) {
                 self.chosen = None;
                 self.notice_pending = true;
             }
@@ -138,6 +138,12 @@ impl SystemOutput {
         let notice = std::mem::take(&mut self.notice_pending).then(|| OUTPUT_FALLBACK.to_string());
         Ok((opened, notice))
     }
+}
+
+/// Só lista as saídas quando há uma escolhida para conferir: com a primeira opção
+/// a abertura não depende da listagem (e um erro nela não pode abortar o início).
+fn needs_output_listing(mode: Mode, output_id: Option<&str>) -> bool {
+    mode != Mode::Mic && output_id.is_some()
 }
 
 /// Abre as fontes e começa a sessão (bloqueante). Devolve a sessão e o `sourceName`.
@@ -167,7 +173,7 @@ fn begin(
     };
     // Saída salva que não existe mais: a primeira opção, sem aviso. Só a escolhida
     // que some no meio da gravação avisa (ver `next_output`).
-    let output = if mode == Mode::Mic {
+    let output = if !needs_output_listing(mode, output_id.as_deref()) {
         None
     } else {
         let outputs = devices::list_outputs()?;
@@ -487,6 +493,23 @@ mod tests {
         );
         // Mesmo que ela volte, fica na primeira opção, sem novo aviso.
         assert_eq!(out.open(|| ids(&["a", "b"]), open).unwrap(), (None, None));
+    }
+
+    #[test]
+    fn empty_listing_keeps_the_chosen_output() {
+        let mut out = SystemOutput::new(Some("a".into()));
+        let open = |id: Option<&str>| Ok::<_, AppError>(id.map(String::from));
+        // Listagem vazia é falha passageira (como em `should_reopen`): não derruba a saída.
+        assert_eq!(out.open(|| ids(&[]), open).unwrap(), (Some("a".into()), None));
+    }
+
+    #[test]
+    fn lists_outputs_only_when_one_was_chosen() {
+        assert!(needs_output_listing(Mode::System, Some("a")));
+        assert!(needs_output_listing(Mode::Both, Some("a")));
+        assert!(!needs_output_listing(Mode::System, None));
+        assert!(!needs_output_listing(Mode::Both, None));
+        assert!(!needs_output_listing(Mode::Mic, Some("a")));
     }
 
     #[test]

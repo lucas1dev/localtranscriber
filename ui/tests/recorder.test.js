@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   SPEAKER_LABEL, liveLine, levelPercent, pickSource, showMicPicker, showHeadphoneHint, pickMicId, createRecorder,
-  showOutputPicker, pickOutputId, firstOutputLabel, outputOptions, PINNED_SILENCE_HINT, silenceHintText, showOutputNote,
+  showOutputPicker, pickOutputId, firstOutputLabel, outputOptions, PINNED_SILENCE_HINT, silenceHintText, currentOutputId, isPinned, showOutputNote,
   isMacUserAgent, silenceHint, showSilenceHint, SILENCE_HINT, SILENCE_HINT_MS, afterRecording, recordingResult, recordingFailure,
 } from '../js/recorder.js';
 import { afterTranscribe, initialState } from '../js/flow.js';
@@ -212,8 +212,24 @@ test('silêncio com saída escolhida aparece também no Windows', () => {
   assert.equal(showSilenceHint({ ...base, mac: true, pinned: false }), true);
   assert.equal(showSilenceHint({ ...base, mac: false, pinned: true, source: 'mic' }), false);
   assert.equal(PINNED_SILENCE_HINT, 'Nada do som do computador até agora. Confira se a reunião está tocando na saída escolhida.');
-  assert.equal(silenceHintText({ pinned: true }), PINNED_SILENCE_HINT);
-  assert.equal(silenceHintText({ pinned: false }), SILENCE_HINT);
+  assert.equal(silenceHintText({ pinned: true, mac: false }), PINNED_SILENCE_HINT);
+  assert.equal(silenceHintText({ pinned: false, mac: true }), SILENCE_HINT);
+  assert.equal(
+    silenceHintText({ pinned: true, mac: true }),
+    'Nada do som do computador até agora. Confira se a reunião está tocando na saída escolhida. Se estiver, confira Ajustes do Sistema → Privacidade e Segurança → Gravação de áudio do sistema.',
+  );
+});
+
+test('currentOutputId: a salva só vale no primeiro carregamento', () => {
+  assert.equal(currentOutputId({ loaded: false, current: null, saved: 'o1' }), 'o1');
+  assert.equal(currentOutputId({ loaded: true, current: null, saved: 'o1' }), null);
+  assert.equal(currentOutputId({ loaded: true, current: 'o2', saved: 'o1' }), 'o2');
+});
+
+test('isPinned: deixa de valer depois do aviso de queda da saída', () => {
+  assert.equal(isPinned({ outputId: 'o1', notice: '' }), true);
+  assert.equal(isPinned({ outputId: 'o1', notice: 'caiu' }), false);
+  assert.equal(isPinned({ outputId: null, notice: '' }), false);
 });
 
 test('createRecorder: record://notice só durante a gravação e outputId vai na 3ª posição', async () => {

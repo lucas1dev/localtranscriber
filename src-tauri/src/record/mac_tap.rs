@@ -1,12 +1,14 @@
-// Som do computador no Mac: process tap GLOBAL do Core Audio.
+// Som do computador no Mac: process tap do Core Audio.
 //
 // A cpal só faz loopback quando a saída padrão não tem entrada; com um fone USB,
-// Bluetooth ou AirPods como saída, ela abriria o microfone do fone. Aqui o tap
-// é global (todos os processos, qualquer saída), então segue a troca de saída
-// sozinho e nunca precisa ser reaberto.
+// Bluetooth ou AirPods como saída, ela abriria o microfone do fone. Dois modos:
+// - primeira opção ("Todas as saídas"): tap GLOBAL mono (todos os processos,
+//   qualquer saída), que segue a troca de saída sozinho e não precisa ser reaberto;
+// - saída escolhida: tap só dessa saída, que pode ser estéreo; se o dispositivo
+//   some, a sessão reabre (e cai para a primeira opção).
 //
-// Passos (como o `loopback.rs` da cpal 0.18.2, mas com tap global):
-// 1. `CATapDescription` mono global, sem excluir processos, sem mudo, privado;
+// Passos (como o `loopback.rs` da cpal 0.18.2, mas com tap global ou por saída):
+// 1. `CATapDescription` (global ou da saída), sem excluir processos, sem mudo, privado;
 // 2. `AudioHardwareCreateProcessTap`;
 // 3. dispositivo agregado privado só com o tap (UID único, auto-start do tap);
 // 4. formato da entrada do agregado (float32) e IOProc + `AudioDeviceStart`.
@@ -49,7 +51,7 @@ use crate::error::AppError;
 static INSTANCE: AtomicU32 = AtomicU32::new(0);
 
 const AGGREGATE_NAME: &str = "Local Transcriber (som do computador)";
-/// No máximo tantos buffers não intercalados (o tap é mono: na prática, 1).
+/// No máximo tantos buffers não intercalados (o tap global é mono: 1; o de uma saída pode ser estéreo).
 const MAX_PLANES: usize = 8;
 
 const RATE_ADDRESS: AudioObjectPropertyAddress = AudioObjectPropertyAddress {
@@ -87,7 +89,7 @@ struct IoCtx {
     rate: &'static AtomicU32,
 }
 
-/// Tap global + agregado + IOProc. O drop para e desfaz tudo, na ordem:
+/// Tap (global ou de uma saída) + agregado + IOProc. O drop para e desfaz tudo, na ordem:
 /// para o dispositivo, destrói o IOProc, remove os listeners (na ordem inversa
 /// em que entraram) e destrói o agregado e o tap.
 pub(super) struct SystemTap {

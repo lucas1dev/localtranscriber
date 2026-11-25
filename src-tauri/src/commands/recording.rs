@@ -107,21 +107,36 @@ fn open_source(
     Ok((devices::open(kind, device_id, tx)?, rx))
 }
 
-/// Decide a saída da próxima abertura do som do computador. `chosen` é a saída
-/// escolhida ainda em uso; `present` a listagem atual (`None` se falhou). Se a
-/// escolhida sumiu, zera `chosen` (a sessão fica na primeira opção até o fim) e
-/// devolve o aviso, uma vez só.
-fn next_output(
-    chosen: &mut Option<String>,
-    present: Option<&[String]>,
-) -> (Option<String>, Option<String>) {
-    match chosen {
-        Some(id) if present.is_none_or(|l| l.contains(id)) => (Some(id.clone()), None),
-        Some(_) => {
-            *chosen = None;
-            (None, Some(OUTPUT_FALLBACK.to_string()))
+/// Estado do som do computador entre reaberturas: a saída escolhida ainda em uso
+/// e se o aviso de queda ainda deve sair.
+struct SystemOutput {
+    chosen: Option<String>,
+    notice_pending: bool,
+}
+
+impl SystemOutput {
+    fn new(chosen: Option<String>) -> Self {
+        Self { chosen, notice_pending: false }
+    }
+
+    /// Abre o som do computador com `open(id)`. Se a saída escolhida sumiu da
+    /// listagem `present` (`None` = a listagem falhou), cai para a primeira opção
+    /// (`id` = `None`) e fica nela até o fim. O aviso fica pendente até uma abertura
+    /// dar certo: uma falha de `open` não o perde, e ele sai uma vez só.
+    fn open<T>(
+        &mut self,
+        present: impl FnOnce() -> Option<Vec<String>>,
+        open: impl FnOnce(Option<&str>) -> Result<T, AppError>,
+    ) -> Result<(T, Option<String>), AppError> {
+        if let Some(id) = &self.chosen {
+            if present().is_some_and(|l| !l.contains(id)) {
+                self.chosen = None;
+                self.notice_pending = true;
+            }
         }
-        None => (None, None),
+        let opened = open(self.chosen.as_deref())?;
+        let notice = std::mem::take(&mut self.notice_pending).then(|| OUTPUT_FALLBACK.to_string());
+        Ok((opened, notice))
     }
 }
 
@@ -180,11 +195,11 @@ fn begin(
                 Ok(Opened { capture: Box::new(source), rx, notice: None })
             }),
             SourceKind::System => {
-                let mut chosen = device_id;
+                let mut output = SystemOutput::new(device_id);
                 Box::new(move || {
-                    let present = if chosen.is_some() { devices::output_ids() } else { None };
-                    let (id, notice) = next_output(&mut chosen, present.as_deref());
-                    let (source, rx) = open_source(kind, id.as_deref())?;
+                    let ((source, rx), notice) = output.open(devices::output_ids, |id| {
+                        open_source(kind, id)
+                    })?;
                     Ok(Opened { capture: Box::new(source), rx, notice })
                 })
             }
@@ -454,20 +469,38 @@ mod tests {
         assert_eq!(s.record_output_id.as_deref(), Some("o1"));
     }
 
+    fn ids(l: &[&str]) -> Option<Vec<String>> {
+        Some(l.iter().map(|s| s.to_string()).collect())
+    }
+
     #[test]
-    fn next_output_falls_back_once_and_stays() {
-        let ids = |l: &[&str]| l.iter().map(|s| s.to_string()).collect::<Vec<_>>();
-        let mut chosen = Some("a".to_string());
+    fn system_output_falls_back_once_and_stays() {
+        let mut out = SystemOutput::new(Some("a".into()));
+        let open = |id: Option<&str>| Ok::<_, AppError>(id.map(String::from));
         // Presente, ou listagem que falhou: continua presa, sem aviso.
-        assert_eq!(next_output(&mut chosen, Some(&ids(&["a", "b"]))), (Some("a".into()), None));
-        assert_eq!(next_output(&mut chosen, None), (Some("a".into()), None));
+        assert_eq!(out.open(|| ids(&["a", "b"]), open).unwrap(), (Some("a".into()), None));
+        assert_eq!(out.open(|| None, open).unwrap(), (Some("a".into()), None));
         // Sumiu: primeira opção, com um aviso.
         assert_eq!(
-            next_output(&mut chosen, Some(&ids(&["b"]))),
+            out.open(|| ids(&["b"]), open).unwrap(),
             (None, Some(OUTPUT_FALLBACK.to_string()))
         );
-        // Mesmo que ela volte, a sessão fica na primeira opção, sem novo aviso.
-        assert_eq!(next_output(&mut chosen, Some(&ids(&["a", "b"]))), (None, None));
+        // Mesmo que ela volte, fica na primeira opção, sem novo aviso.
+        assert_eq!(out.open(|| ids(&["a", "b"]), open).unwrap(), (None, None));
+    }
+
+    #[test]
+    fn fallback_notice_survives_a_failed_first_option_open() {
+        let mut out = SystemOutput::new(Some("a".into()));
+        let fail = |_: Option<&str>| Err::<Option<String>, _>(AppError::User("falhou".into()));
+        let ok = |id: Option<&str>| Ok::<_, AppError>(id.map(String::from));
+        // A saída sumiu e a primeira opção também falha ao abrir: sem aviso ainda.
+        assert!(out.open(|| ids(&["b"]), fail).is_err());
+        // Nas tentativas seguintes a escolhida nem é consultada de novo.
+        assert!(out.open(|| panic!("não consulta a listagem"), fail).is_err());
+        // A primeira abertura que dá certo leva o aviso, uma vez só.
+        assert_eq!(out.open(|| None, ok).unwrap(), (None, Some(OUTPUT_FALLBACK.to_string())));
+        assert_eq!(out.open(|| None, ok).unwrap(), (None, None));
     }
 
     #[test]
